@@ -141,6 +141,7 @@ pub fn run(
     let mut segments = true;
     let mut transparent_background = false;
     let mut transparent_bars = false;
+    let mut window_decorated = true;
     let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
     let mut label_refresh = 0.0f32;
@@ -173,6 +174,10 @@ pub fn run(
                     KeyCode::Digit4 => spectrum.set_mode(Mode::Hybrid),
                     KeyCode::Digit5 => spectrum.set_mode(Mode::Sizes),
                     KeyCode::KeyS => segments = !segments,
+                    KeyCode::KeyW => {
+                        window_decorated = !window_decorated;
+                        window.set_decorations(window_decorated);
+                    }
                     KeyCode::KeyZ => transparent_background = !transparent_background,
                     KeyCode::KeyX => transparent_bars = !transparent_bars,
                     KeyCode::KeyA => {
@@ -220,14 +225,16 @@ pub fn run(
                 let tone_label = audio_snapshot.palette.name();
                 let background_label = if transparent_background { "bg clr" } else { "bg on" };
                 let bars_label = if transparent_bars { "bar clr" } else { "bar gry" };
+                let frame_label = window_frame_label(window_decorated);
                 let header = format!(
-                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  S seg  A {}  T {}  Z {}  X {}  Q quit",
+                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
                     human_rate(spectrum.rate_out),
                     audio_label,
                     tone_label,
+                    frame_label,
                     background_label,
                     bars_label,
                 );
@@ -373,6 +380,14 @@ fn background_color(transparent: bool) -> wgpu::Color {
     }
 }
 
+fn window_frame_label(decorated: bool) -> &'static str {
+    if decorated {
+        "frame"
+    } else {
+        "bare"
+    }
+}
+
 fn rebuild_labels(
     font_system: &mut FontSystem,
     label_bufs: &mut Vec<TextBuffer>,
@@ -409,7 +424,9 @@ fn rebuild_labels(
 
 #[cfg(test)]
 mod tests {
-    use super::{background_color, build_instances, preferred_alpha_mode, surface_extent};
+    use super::{
+        background_color, build_instances, preferred_alpha_mode, surface_extent, window_frame_label,
+    };
     use crate::bands::{Mode, Spectrum};
 
     #[test]
@@ -427,6 +444,12 @@ mod tests {
     fn background_color_alpha_can_be_toggled() {
         assert_eq!(background_color(false).a, 1.0);
         assert_eq!(background_color(true).a, 0.0);
+    }
+
+    #[test]
+    fn window_frame_label_tracks_decoration_state() {
+        assert_eq!(window_frame_label(true), "frame");
+        assert_eq!(window_frame_label(false), "bare");
     }
 
     #[test]
