@@ -15,7 +15,7 @@ use winit::{
     event::{ElementState, Event, KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::WindowBuilder,
+    window::{Window, WindowBuilder},
 };
 
 use crate::audio::{AudioConfig, AudioControl};
@@ -36,6 +36,7 @@ const MAX_INSTANCES: usize = 4096;
 const MARGIN_X: f32 = 26.0;
 const TOP: f32 = 56.0;
 const BOTTOM_LABELS: f32 = 46.0;
+const DECORATION_REFRESH_FRAMES: u8 = 4;
 
 pub fn run(
     mut spectrum: Spectrum,
@@ -142,6 +143,7 @@ pub fn run(
     let mut transparent_background = false;
     let mut transparent_bars = false;
     let mut window_decorated = true;
+    let mut decoration_refresh_frames = 0u8;
     let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
     let mut label_refresh = 0.0f32;
@@ -175,8 +177,9 @@ pub fn run(
                     KeyCode::Digit5 => spectrum.set_mode(Mode::Sizes),
                     KeyCode::KeyS => segments = !segments,
                     KeyCode::KeyW => {
-                        window_decorated = !window_decorated;
-                        window.set_decorations(window_decorated);
+                        window_decorated = next_window_decoration_request(window.is_decorated());
+                        decoration_refresh_frames = DECORATION_REFRESH_FRAMES;
+                        apply_window_decorations(&window, window_decorated);
                     }
                     KeyCode::KeyZ => transparent_background = !transparent_background,
                     KeyCode::KeyX => transparent_bars = !transparent_bars,
@@ -191,6 +194,11 @@ pub fn run(
                 };
             }
             WindowEvent::RedrawRequested => {
+                if decoration_refresh_frames > 0 {
+                    apply_window_decorations(&window, window_decorated);
+                    decoration_refresh_frames -= 1;
+                }
+
                 let now = Instant::now();
                 let dt = (now - last).as_secs_f32();
                 last = now;
@@ -388,6 +396,18 @@ fn window_frame_label(decorated: bool) -> &'static str {
     }
 }
 
+fn next_window_decoration_request(currently_decorated: bool) -> bool {
+    !currently_decorated
+}
+
+fn apply_window_decorations(window: &Window, decorated: bool) {
+    let inner_size = window.inner_size();
+    window.set_decorations(decorated);
+    let _ = window.request_inner_size(inner_size);
+    window.set_visible(true);
+    window.request_redraw();
+}
+
 fn rebuild_labels(
     font_system: &mut FontSystem,
     label_bufs: &mut Vec<TextBuffer>,
@@ -425,7 +445,8 @@ fn rebuild_labels(
 #[cfg(test)]
 mod tests {
     use super::{
-        background_color, build_instances, preferred_alpha_mode, surface_extent, window_frame_label,
+        background_color, build_instances, next_window_decoration_request, preferred_alpha_mode,
+        surface_extent, window_frame_label,
     };
     use crate::bands::{Mode, Spectrum};
 
@@ -450,6 +471,12 @@ mod tests {
     fn window_frame_label_tracks_decoration_state() {
         assert_eq!(window_frame_label(true), "frame");
         assert_eq!(window_frame_label(false), "bare");
+    }
+
+    #[test]
+    fn next_window_decoration_request_toggles_current_state() {
+        assert!(!next_window_decoration_request(true));
+        assert!(next_window_decoration_request(false));
     }
 
     #[test]
