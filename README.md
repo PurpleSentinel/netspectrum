@@ -73,6 +73,7 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | `G`       | Use the galaxy / orbit renderer                         |
 | `L`       | Use the lightning renderer                              |
 | `Y`       | Cycle the visual colour palette                         |
+| `H`       | Cycle HUD detail: full, compact, clean visual-only      |
 | `S`       | Toggle LED segmentation on the bars                     |
 | `A`       | Toggle optional audio feedback                          |
 | `T`       | Cycle through the tone palettes                         |
@@ -99,6 +100,8 @@ instead of restoring the frame; this is tracked in issue #16.
 * The particle renderers add motion-blur trail dots and soft bloom-style layers
   around brighter traffic. Press `Y` to cycle between the neon, solar, aurora,
   and candy visual palettes.
+* Press `H` to cycle the on-screen text between full header plus band labels,
+  compact header only, and a clean visual-only view.
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.
