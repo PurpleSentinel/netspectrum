@@ -63,6 +63,13 @@ enum VisualPalette {
     Candy,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum HudDetail {
+    Full,
+    Compact,
+    Hidden,
+}
+
 #[derive(Copy, Clone)]
 struct Plot {
     w: f32,
@@ -99,6 +106,32 @@ impl VisualPalette {
             VisualPalette::Aurora => "aurora",
             VisualPalette::Candy => "candy",
         }
+    }
+}
+
+impl HudDetail {
+    fn next(self) -> Self {
+        match self {
+            HudDetail::Full => HudDetail::Compact,
+            HudDetail::Compact => HudDetail::Hidden,
+            HudDetail::Hidden => HudDetail::Full,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            HudDetail::Full => "full",
+            HudDetail::Compact => "mini",
+            HudDetail::Hidden => "clean",
+        }
+    }
+
+    fn shows_header(self) -> bool {
+        !matches!(self, HudDetail::Hidden)
+    }
+
+    fn shows_labels(self) -> bool {
+        matches!(self, HudDetail::Full)
     }
 }
 
@@ -210,6 +243,7 @@ pub fn run(
     let mut decoration_refresh_frames = 0u8;
     let mut visual_style = VisualStyle::Bars;
     let mut visual_palette = VisualPalette::Neon;
+    let mut hud_detail = HudDetail::Full;
     let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
     let mut animation_time = 0.0f32;
@@ -252,6 +286,7 @@ pub fn run(
                     KeyCode::KeyG => visual_style = VisualStyle::Galaxy,
                     KeyCode::KeyL => visual_style = VisualStyle::Lightning,
                     KeyCode::KeyY => visual_palette = visual_palette.next(),
+                    KeyCode::KeyH => hud_detail = hud_detail.next(),
                     KeyCode::KeyW => {
                         window_decorated = next_window_decoration_request(window.is_decorated());
                         decoration_refresh_frames = DECORATION_REFRESH_FRAMES;
@@ -325,59 +360,83 @@ pub fn run(
                 let frame_label = window_frame_label(window_decorated);
                 let visual_label = visual_style_label(visual_style);
                 let palette_label = visual_palette.name();
-                let header = format!(
-                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  V {}  Y {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
-                    iface,
-                    spectrum.mode.name(),
-                    human_rate(spectrum.rate_in),
-                    human_rate(spectrum.rate_out),
-                    visual_label,
-                    palette_label,
-                    audio_label,
-                    tone_label,
-                    frame_label,
-                    background_label,
-                    bars_label,
-                );
-                header_buf.set_size(&mut font_system, w, 40.0);
-                header_buf.set_text(
-                    &mut font_system,
-                    &header,
-                    Attrs::new().family(Family::Monospace),
-                    Shaping::Advanced,
-                );
+                let hud_label = hud_detail.name();
+                let header = if hud_detail.shows_header() {
+                    match hud_detail {
+                        HudDetail::Full => Some(format!(
+                            "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  V {}  Y {}  H {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
+                            iface,
+                            spectrum.mode.name(),
+                            human_rate(spectrum.rate_in),
+                            human_rate(spectrum.rate_out),
+                            visual_label,
+                            palette_label,
+                            hud_label,
+                            audio_label,
+                            tone_label,
+                            frame_label,
+                            background_label,
+                            bars_label,
+                        )),
+                        HudDetail::Compact => Some(format!(
+                            "NETSPECTRUM {} [{}]  in {}  out {}  V {}  Y {}  H {}  Q quit",
+                            iface,
+                            spectrum.mode.name(),
+                            human_rate(spectrum.rate_in),
+                            human_rate(spectrum.rate_out),
+                            visual_label,
+                            palette_label,
+                            hud_label,
+                        )),
+                        HudDetail::Hidden => None,
+                    }
+                } else {
+                    None
+                };
 
-                let mut areas: Vec<TextArea> = vec![TextArea {
-                    buffer: &header_buf,
-                    left: MARGIN_X,
-                    top: 16.0,
-                    scale: 1.0,
-                    bounds: TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: config.width as i32,
-                        bottom: config.height as i32,
-                    },
-                    default_color: TextColor::rgb(225, 232, 245),
-                }];
+                let mut areas: Vec<TextArea> = Vec::new();
+                if let Some(header) = header {
+                    header_buf.set_size(&mut font_system, w, 40.0);
+                    header_buf.set_text(
+                        &mut font_system,
+                        &header,
+                        Attrs::new().family(Family::Monospace),
+                        Shaping::Advanced,
+                    );
+                    areas.push(TextArea {
+                        buffer: &header_buf,
+                        left: MARGIN_X,
+                        top: 16.0,
+                        scale: 1.0,
+                        bounds: TextBounds {
+                            left: 0,
+                            top: 0,
+                            right: config.width as i32,
+                            bottom: config.height as i32,
+                        },
+                        default_color: TextColor::rgb(225, 232, 245),
+                    });
+                }
 
                 let n = spectrum.band_count().max(1) as f32;
                 let slot_w = (w - 2.0 * MARGIN_X) / n;
-                for (i, buf) in label_bufs.iter().enumerate() {
-                    let x = MARGIN_X + i as f32 * slot_w;
-                    areas.push(TextArea {
-                        buffer: buf,
-                        left: x,
-                        top: h - BOTTOM_LABELS + 4.0,
-                        scale: 1.0,
-                        bounds: TextBounds {
-                            left: x as i32,
-                            top: 0,
-                            right: (x + slot_w) as i32,
-                            bottom: config.height as i32,
-                        },
-                        default_color: TextColor::rgb(150, 160, 178),
-                    });
+                if hud_detail.shows_labels() {
+                    for (i, buf) in label_bufs.iter().enumerate() {
+                        let x = MARGIN_X + i as f32 * slot_w;
+                        areas.push(TextArea {
+                            buffer: buf,
+                            left: x,
+                            top: h - BOTTOM_LABELS + 4.0,
+                            scale: 1.0,
+                            bounds: TextBounds {
+                                left: x as i32,
+                                top: 0,
+                                right: (x + slot_w) as i32,
+                                bottom: config.height as i32,
+                            },
+                            default_color: TextColor::rgb(150, 160, 178),
+                        });
+                    }
                 }
 
                 if text_renderer
@@ -843,8 +902,8 @@ mod tests {
         build_lightning_instances, build_matrix_instances, build_oscilloscope_instances,
         build_pulse_instances, build_radar_instances, build_visual_instances,
         firework_particle_count, next_window_decoration_request, palette_tint,
-        preferred_alpha_mode, surface_extent, visual_style_label, window_frame_label, Inst,
-        VisualBuildOptions, VisualPalette, VisualStyle, DRAW_MODE_PARTICLE, MAX_INSTANCES,
+        preferred_alpha_mode, surface_extent, visual_style_label, window_frame_label, HudDetail,
+        Inst, VisualBuildOptions, VisualPalette, VisualStyle, DRAW_MODE_PARTICLE, MAX_INSTANCES,
     };
     use crate::bands::{Mode, Spectrum};
 
@@ -902,6 +961,24 @@ mod tests {
             palette_tint(VisualPalette::Aurora, 3),
             palette_tint(VisualPalette::Candy, 3)
         );
+    }
+
+    #[test]
+    fn hud_detail_cycles_from_full_to_clean_and_back() {
+        assert_eq!(HudDetail::Full.name(), "full");
+        assert!(HudDetail::Full.shows_header());
+        assert!(HudDetail::Full.shows_labels());
+
+        assert_eq!(HudDetail::Full.next(), HudDetail::Compact);
+        assert_eq!(HudDetail::Compact.name(), "mini");
+        assert!(HudDetail::Compact.shows_header());
+        assert!(!HudDetail::Compact.shows_labels());
+
+        assert_eq!(HudDetail::Compact.next(), HudDetail::Hidden);
+        assert_eq!(HudDetail::Hidden.name(), "clean");
+        assert!(!HudDetail::Hidden.shows_header());
+        assert!(!HudDetail::Hidden.shows_labels());
+        assert_eq!(HudDetail::Hidden.next(), HudDetail::Full);
     }
 
     #[test]
