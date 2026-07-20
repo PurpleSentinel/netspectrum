@@ -72,6 +72,7 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | `P`       | Use the pulse-ring renderer                             |
 | `G`       | Use the galaxy / orbit renderer                         |
 | `L`       | Use the lightning renderer                              |
+| `Y`       | Cycle the visual colour palette                         |
 | `S`       | Toggle LED segmentation on the bars                     |
 | `A`       | Toggle optional audio feedback                          |
 | `T`       | Cycle through the tone palettes                         |
@@ -95,6 +96,9 @@ instead of restoring the frame; this is tracked in issue #16.
   oscilloscope, `P` pulse rings, `G` galaxy, and `L` lightning. They use the
   same band data as the bars, so the view changes but the underlying traffic
   grouping stays the same.
+* The particle renderers add motion-blur trail dots and soft bloom-style layers
+  around brighter traffic. Press `Y` to cycle between the neon, solar, aurora,
+  and candy visual palettes.
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.

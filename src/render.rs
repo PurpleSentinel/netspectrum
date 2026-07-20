@@ -41,6 +41,7 @@ const DRAW_MODE_BAR: f32 = 0.0;
 const DRAW_MODE_FLAT: f32 = 1.0;
 const DRAW_MODE_PARTICLE: f32 = 2.0;
 const MAX_FIREWORK_PARTICLES_PER_BAND: usize = 56;
+const TRAIL_OVERLAY_ALPHA: f32 = 0.075;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum VisualStyle {
@@ -52,6 +53,14 @@ enum VisualStyle {
     Pulse,
     Galaxy,
     Lightning,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum VisualPalette {
+    Neon,
+    Solar,
+    Aurora,
+    Candy,
 }
 
 #[derive(Copy, Clone)]
@@ -69,7 +78,28 @@ struct VisualBuildOptions {
     segments: bool,
     transparent_bars: bool,
     style: VisualStyle,
+    palette: VisualPalette,
     time: f32,
+}
+
+impl VisualPalette {
+    fn next(self) -> Self {
+        match self {
+            VisualPalette::Neon => VisualPalette::Solar,
+            VisualPalette::Solar => VisualPalette::Aurora,
+            VisualPalette::Aurora => VisualPalette::Candy,
+            VisualPalette::Candy => VisualPalette::Neon,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            VisualPalette::Neon => "neon",
+            VisualPalette::Solar => "solar",
+            VisualPalette::Aurora => "aurora",
+            VisualPalette::Candy => "candy",
+        }
+    }
 }
 
 pub fn run(
@@ -179,6 +209,7 @@ pub fn run(
     let mut window_decorated = true;
     let mut decoration_refresh_frames = 0u8;
     let mut visual_style = VisualStyle::Bars;
+    let mut visual_palette = VisualPalette::Neon;
     let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
     let mut animation_time = 0.0f32;
@@ -220,6 +251,7 @@ pub fn run(
                     KeyCode::KeyP => visual_style = VisualStyle::Pulse,
                     KeyCode::KeyG => visual_style = VisualStyle::Galaxy,
                     KeyCode::KeyL => visual_style = VisualStyle::Lightning,
+                    KeyCode::KeyY => visual_palette = visual_palette.next(),
                     KeyCode::KeyW => {
                         window_decorated = next_window_decoration_request(window.is_decorated());
                         decoration_refresh_frames = DECORATION_REFRESH_FRAMES;
@@ -272,6 +304,7 @@ pub fn run(
                         segments,
                         transparent_bars,
                         style: visual_style,
+                        palette: visual_palette,
                         time: animation_time,
                     },
                 );
@@ -291,13 +324,15 @@ pub fn run(
                 let bars_label = if transparent_bars { "bar clr" } else { "bar gry" };
                 let frame_label = window_frame_label(window_decorated);
                 let visual_label = visual_style_label(visual_style);
+                let palette_label = visual_palette.name();
                 let header = format!(
-                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  V {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
+                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  V {}  Y {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
                     human_rate(spectrum.rate_out),
                     visual_label,
+                    palette_label,
                     audio_label,
                     tone_label,
                     frame_label,
@@ -495,15 +530,27 @@ fn build_visual_instances(
             options.segments,
             options.transparent_bars,
         ),
-        VisualStyle::Fireworks => build_firework_instances(out, spectrum, w, h, options.time),
-        VisualStyle::Radar => build_radar_instances(out, spectrum, w, h, options.time),
-        VisualStyle::Matrix => build_matrix_instances(out, spectrum, w, h, options.time),
-        VisualStyle::Oscilloscope => {
-            build_oscilloscope_instances(out, spectrum, w, h, options.time)
+        VisualStyle::Fireworks => {
+            build_firework_instances(out, spectrum, w, h, options.time, options.palette)
         }
-        VisualStyle::Pulse => build_pulse_instances(out, spectrum, w, h, options.time),
-        VisualStyle::Galaxy => build_galaxy_instances(out, spectrum, w, h, options.time),
-        VisualStyle::Lightning => build_lightning_instances(out, spectrum, w, h, options.time),
+        VisualStyle::Radar => {
+            build_radar_instances(out, spectrum, w, h, options.time, options.palette)
+        }
+        VisualStyle::Matrix => {
+            build_matrix_instances(out, spectrum, w, h, options.time, options.palette)
+        }
+        VisualStyle::Oscilloscope => {
+            build_oscilloscope_instances(out, spectrum, w, h, options.time, options.palette)
+        }
+        VisualStyle::Pulse => {
+            build_pulse_instances(out, spectrum, w, h, options.time, options.palette)
+        }
+        VisualStyle::Galaxy => {
+            build_galaxy_instances(out, spectrum, w, h, options.time, options.palette)
+        }
+        VisualStyle::Lightning => {
+            build_lightning_instances(out, spectrum, w, h, options.time, options.palette)
+        }
     }
 }
 
@@ -570,6 +617,63 @@ fn push_particle(
     );
 }
 
+fn push_bloom_particle(
+    out: &mut Vec<Inst>,
+    plot: Plot,
+    cx: f32,
+    cy: f32,
+    size: f32,
+    color: [f32; 4],
+    intensity: f32,
+) {
+    let glow = [color[0], color[1], color[2], color[3] * 0.22];
+    push_particle(out, plot, cx, cy, size * 2.6, glow, intensity);
+    push_particle(out, plot, cx, cy, size, color, intensity);
+}
+
+struct TrailParticle {
+    cx: f32,
+    cy: f32,
+    dx: f32,
+    dy: f32,
+    size: f32,
+    color: [f32; 4],
+    intensity: f32,
+    steps: usize,
+}
+
+fn push_trail_bloom_particle(out: &mut Vec<Inst>, plot: Plot, particle: TrailParticle) {
+    let steps = particle.steps.min(5);
+    for step in (1..=steps).rev() {
+        let k = step as f32 / (steps + 1) as f32;
+        let trail_color = [
+            particle.color[0],
+            particle.color[1],
+            particle.color[2],
+            particle.color[3] * (0.08 + (1.0 - k) * 0.14),
+        ];
+        push_particle(
+            out,
+            plot,
+            particle.cx - particle.dx * k,
+            particle.cy - particle.dy * k,
+            particle.size * (0.64 + (1.0 - k) * 0.28),
+            trail_color,
+            particle.intensity,
+        );
+    }
+
+    push_bloom_particle(
+        out,
+        plot,
+        particle.cx,
+        particle.cy,
+        particle.size,
+        particle.color,
+        particle.intensity,
+    );
+}
+
 fn push_flat_rect(
     out: &mut Vec<Inst>,
     plot: Plot,
@@ -608,17 +712,67 @@ fn band_signed_levels(spectrum: &Spectrum, band: usize) -> (f32, f32) {
     }
 }
 
-fn vivid_tint(band: usize) -> [f32; 3] {
-    match band % 8 {
-        0 => [0.05, 1.0, 0.95],
-        1 => [1.0, 0.92, 0.05],
-        2 => [1.0, 0.08, 0.45],
-        3 => [0.42, 0.18, 1.0],
-        4 => [0.22, 1.0, 0.18],
-        5 => [1.0, 0.36, 0.02],
-        6 => [0.2, 0.62, 1.0],
-        _ => [1.0, 0.18, 0.95],
-    }
+fn palette_tint(palette: VisualPalette, band: usize) -> [f32; 3] {
+    const NEON: [[f32; 3]; 8] = [
+        [0.05, 1.0, 0.95],
+        [1.0, 0.92, 0.05],
+        [1.0, 0.08, 0.45],
+        [0.42, 0.18, 1.0],
+        [0.22, 1.0, 0.18],
+        [1.0, 0.36, 0.02],
+        [0.2, 0.62, 1.0],
+        [1.0, 0.18, 0.95],
+    ];
+    const SOLAR: [[f32; 3]; 8] = [
+        [1.0, 0.82, 0.16],
+        [1.0, 0.42, 0.04],
+        [1.0, 0.16, 0.08],
+        [1.0, 0.62, 0.0],
+        [0.95, 0.96, 0.28],
+        [1.0, 0.24, 0.02],
+        [1.0, 0.72, 0.10],
+        [0.9, 0.34, 0.06],
+    ];
+    const AURORA: [[f32; 3]; 8] = [
+        [0.08, 1.0, 0.54],
+        [0.02, 0.82, 1.0],
+        [0.36, 0.44, 1.0],
+        [0.10, 1.0, 0.92],
+        [0.58, 1.0, 0.18],
+        [0.28, 0.92, 1.0],
+        [0.68, 0.34, 1.0],
+        [0.06, 1.0, 0.70],
+    ];
+    const CANDY: [[f32; 3]; 8] = [
+        [1.0, 0.24, 0.72],
+        [0.72, 0.24, 1.0],
+        [1.0, 0.55, 0.88],
+        [0.36, 0.80, 1.0],
+        [1.0, 0.88, 0.22],
+        [0.98, 0.34, 1.0],
+        [0.28, 1.0, 0.88],
+        [1.0, 0.38, 0.56],
+    ];
+
+    let colors = match palette {
+        VisualPalette::Neon => NEON,
+        VisualPalette::Solar => SOLAR,
+        VisualPalette::Aurora => AURORA,
+        VisualPalette::Candy => CANDY,
+    };
+    colors[band % colors.len()]
+}
+
+fn push_trail_overlay(out: &mut Vec<Inst>, plot: Plot) {
+    push_flat_rect(
+        out,
+        plot,
+        0.0,
+        plot.h,
+        plot.w,
+        0.0,
+        [0.0, 0.0, 0.0, TRAIL_OVERLAY_ALPHA],
+    );
 }
 
 fn firework_particle_count(intensity: f32) -> usize {
@@ -688,9 +842,9 @@ mod tests {
         background_color, build_firework_instances, build_galaxy_instances, build_instances,
         build_lightning_instances, build_matrix_instances, build_oscilloscope_instances,
         build_pulse_instances, build_radar_instances, build_visual_instances,
-        firework_particle_count, next_window_decoration_request, preferred_alpha_mode,
-        surface_extent, visual_style_label, window_frame_label, Inst, VisualBuildOptions,
-        VisualStyle, DRAW_MODE_PARTICLE, MAX_INSTANCES,
+        firework_particle_count, next_window_decoration_request, palette_tint,
+        preferred_alpha_mode, surface_extent, visual_style_label, window_frame_label, Inst,
+        VisualBuildOptions, VisualPalette, VisualStyle, DRAW_MODE_PARTICLE, MAX_INSTANCES,
     };
     use crate::bands::{Mode, Spectrum};
 
@@ -727,6 +881,27 @@ mod tests {
         assert_eq!(visual_style_label(VisualStyle::Pulse), "pulse");
         assert_eq!(visual_style_label(VisualStyle::Galaxy), "galaxy");
         assert_eq!(visual_style_label(VisualStyle::Lightning), "bolt");
+    }
+
+    #[test]
+    fn visual_palette_cycles_and_names_are_stable() {
+        assert_eq!(VisualPalette::Neon.name(), "neon");
+        assert_eq!(VisualPalette::Neon.next(), VisualPalette::Solar);
+        assert_eq!(VisualPalette::Solar.next(), VisualPalette::Aurora);
+        assert_eq!(VisualPalette::Aurora.next(), VisualPalette::Candy);
+        assert_eq!(VisualPalette::Candy.next(), VisualPalette::Neon);
+    }
+
+    #[test]
+    fn visual_palettes_produce_distinct_tints() {
+        assert_ne!(
+            palette_tint(VisualPalette::Neon, 0),
+            palette_tint(VisualPalette::Solar, 0)
+        );
+        assert_ne!(
+            palette_tint(VisualPalette::Aurora, 3),
+            palette_tint(VisualPalette::Candy, 3)
+        );
     }
 
     #[test]
@@ -781,14 +956,28 @@ mod tests {
         let mut spectrum = Spectrum::new(Mode::Protocol, 12);
         let mut quiet = Vec::new();
         spectrum.disp[0] = 0.15;
-        build_firework_instances(&mut quiet, &spectrum, 1280.0, 720.0, 0.25);
+        build_firework_instances(
+            &mut quiet,
+            &spectrum,
+            1280.0,
+            720.0,
+            0.25,
+            VisualPalette::Neon,
+        );
 
         let mut loud = Vec::new();
         spectrum.disp[0] = 0.90;
-        build_firework_instances(&mut loud, &spectrum, 1280.0, 720.0, 0.25);
+        build_firework_instances(
+            &mut loud,
+            &spectrum,
+            1280.0,
+            720.0,
+            0.25,
+            VisualPalette::Neon,
+        );
 
         assert!(loud.len() > quiet.len());
-        assert!(loud.iter().all(|inst| inst.params[1] == DRAW_MODE_PARTICLE));
+        assert!(loud.iter().any(|inst| inst.params[1] == DRAW_MODE_PARTICLE));
     }
 
     #[test]
@@ -817,6 +1006,7 @@ mod tests {
                     segments: true,
                     transparent_bars: false,
                     style,
+                    palette: VisualPalette::Neon,
                     time: 0.33,
                 },
             );
@@ -832,7 +1022,7 @@ mod tests {
         spectrum.disp[1] = 0.4;
 
         for build in [
-            build_radar_instances as fn(&mut Vec<Inst>, &Spectrum, f32, f32, f32),
+            build_radar_instances as fn(&mut Vec<Inst>, &Spectrum, f32, f32, f32, VisualPalette),
             build_matrix_instances,
             build_oscilloscope_instances,
             build_pulse_instances,
@@ -840,7 +1030,14 @@ mod tests {
             build_lightning_instances,
         ] {
             let mut instances = Vec::new();
-            build(&mut instances, &spectrum, 1280.0, 720.0, 0.45);
+            build(
+                &mut instances,
+                &spectrum,
+                1280.0,
+                720.0,
+                0.45,
+                VisualPalette::Neon,
+            );
             assert!(instances
                 .iter()
                 .any(|inst| inst.params[1] == DRAW_MODE_PARTICLE));
@@ -1019,28 +1216,17 @@ fn build_instances(
     }
 }
 
-fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+fn build_firework_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+    palette: VisualPalette,
+) {
     out.clear();
-    let ndc_x = |px: f32| px / w * 2.0 - 1.0;
-    let ndc_y = |py: f32| 1.0 - py / h * 2.0;
-
-    let plot_top = TOP + 6.0;
-    let plot_bottom = h - BOTTOM_LABELS - 4.0;
-    let plot_h = (plot_bottom - plot_top).max(1.0);
-    let n = spectrum.band_count().max(1) as f32;
-    let slot_w = (w - 2.0 * MARGIN_X) / n;
-
-    let push_particle =
-        |out: &mut Vec<Inst>, cx: f32, cy: f32, size: f32, color: [f32; 4], intensity: f32| {
-            if out.len() < MAX_INSTANCES {
-                let r = size * 0.5;
-                out.push(Inst {
-                    rect: [ndc_x(cx - r), ndc_y(cy + r), ndc_x(cx + r), ndc_y(cy - r)],
-                    color,
-                    params: [intensity, DRAW_MODE_PARTICLE, 0.0, 0.0],
-                });
-            }
-        };
+    let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
 
     let emit_firework = |out: &mut Vec<Inst>,
                          band: usize,
@@ -1057,23 +1243,32 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
         let phase = (time * (0.48 + intensity * 1.25) + band as f32 * 0.137).fract();
         let fade = (1.0 - phase).powf(0.75);
         let radius =
-            (slot_w * (0.22 + intensity * 1.05)).min(plot_h * 0.30) * (0.18 + phase * 1.25);
+            (p.slot_w * (0.22 + intensity * 1.05)).min(p.height * 0.30) * (0.18 + phase * 1.25);
         let seed_base = (band as u32 + 1).wrapping_mul(7919);
 
         let trail_count = (5.0 + intensity * 11.0).round() as usize;
         for trail in 0..trail_count {
             let k = (trail + 1) as f32 / (trail_count + 1) as f32;
-            let wobble = (hash01(seed_base ^ trail as u32) - 0.5) * slot_w * 0.16;
+            let wobble = (hash01(seed_base ^ trail as u32) - 0.5) * p.slot_w * 0.16;
             let y = base_y + (burst_y - base_y) * k;
             let alpha = (0.12 + intensity * 0.32) * (1.0 - k * 0.40);
             let color = firework_color(intensity, seed_base ^ trail as u32, tint, alpha);
-            push_particle(out, cx + wobble, y, 4.0 + intensity * 7.0, color, intensity);
+            push_bloom_particle(
+                out,
+                p,
+                cx + wobble,
+                y,
+                4.0 + intensity * 7.0,
+                color,
+                intensity,
+            );
         }
 
         let core_alpha = (0.28 + intensity * 0.72) * fade;
         let core_size = 11.0 + intensity * 38.0 * (1.0 - phase * 0.25);
-        push_particle(
+        push_bloom_particle(
             out,
+            p,
             cx,
             burst_y,
             core_size,
@@ -1092,19 +1287,38 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
             let size = 4.5 + intensity * 13.0 * (1.0 - phase * 0.18);
             let alpha = fade * (0.32 + intensity * 0.88) * (0.82 + hash01(seed ^ 0x789a) * 0.34);
             let color = firework_color(intensity, seed, tint, alpha);
-            push_particle(out, px, py, size, color, intensity);
+            push_trail_bloom_particle(
+                out,
+                p,
+                TrailParticle {
+                    cx: px,
+                    cy: py,
+                    dx: (px - cx) * 0.22,
+                    dy: (py - burst_y) * 0.22 + gravity * 0.18,
+                    size,
+                    color,
+                    intensity,
+                    steps: 4,
+                },
+            );
 
             if i % 2 == 0 {
                 let inner_px = cx + angle.cos() * radius * scatter * 0.45;
                 let inner_py = burst_y + angle.sin() * radius * scatter * 0.45 + gravity * 0.35;
                 let inner_alpha = alpha * (0.68 + intensity * 0.24);
-                push_particle(
+                push_trail_bloom_particle(
                     out,
-                    inner_px,
-                    inner_py,
-                    size * 0.72,
-                    firework_color(intensity, seed ^ 0xd00d, tint, inner_alpha),
-                    intensity,
+                    p,
+                    TrailParticle {
+                        cx: inner_px,
+                        cy: inner_py,
+                        dx: (inner_px - cx) * 0.26,
+                        dy: (inner_py - burst_y) * 0.26 + gravity * 0.10,
+                        size: size * 0.72,
+                        color: firework_color(intensity, seed ^ 0xd00d, tint, inner_alpha),
+                        intensity,
+                        steps: 3,
+                    },
                 );
             }
         }
@@ -1113,22 +1327,17 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
     if !spectrum.mirrored {
         for band in 0..spectrum.band_count() {
             let intensity = spectrum.disp[band].clamp(0.0, 1.0);
-            let cx = MARGIN_X + (band as f32 + 0.5) * slot_w;
-            let base_y = plot_bottom;
-            let burst_y = plot_bottom - (0.16 + intensity * 0.74) * plot_h;
-            let tint = match band % 4 {
-                0 => [0.05, 1.0, 0.95],
-                1 => [1.0, 0.92, 0.05],
-                2 => [1.0, 0.08, 0.45],
-                _ => [0.42, 0.18, 1.0],
-            };
+            let cx = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
+            let base_y = p.bottom;
+            let burst_y = p.bottom - (0.16 + intensity * 0.74) * p.height;
+            let tint = palette_tint(palette, band);
             emit_firework(out, band, cx, base_y, burst_y, intensity, tint);
         }
     } else {
-        let mid = (plot_top + plot_bottom) * 0.5;
-        let half_h = plot_h * 0.5 - 2.0;
+        let mid = (p.top + p.bottom) * 0.5;
+        let half_h = p.height * 0.5 - 2.0;
         for band in 0..spectrum.band_count() {
-            let cx = MARGIN_X + (band as f32 + 0.5) * slot_w;
+            let cx = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
             let inbound = spectrum.disp[band * 2].clamp(0.0, 1.0);
             let outbound = spectrum.disp[band * 2 + 1].clamp(0.0, 1.0);
 
@@ -1139,7 +1348,7 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
                 mid,
                 mid - (0.10 + inbound * 0.82) * half_h,
                 inbound,
-                [0.02, 0.95, 1.0],
+                palette_tint(palette, band * 2),
             );
             emit_firework(
                 out,
@@ -1148,15 +1357,23 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
                 mid,
                 mid + (0.10 + outbound * 0.82) * half_h,
                 outbound,
-                [1.0, 0.28, 0.02],
+                palette_tint(palette, band * 2 + 1),
             );
         }
     }
 }
 
-fn build_radar_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+fn build_radar_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+    palette: VisualPalette,
+) {
     out.clear();
     let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
     let cx = w * 0.5;
     let cy = p.top + p.height * 0.52;
     let radius = (p.height.min(w - 2.0 * MARGIN_X)) * 0.43;
@@ -1202,9 +1419,9 @@ fn build_radar_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f3
             - std::f32::consts::FRAC_PI_2;
         let pulse = (time * (0.8 + level * 2.4) + hash01(band as u32) * 2.0).fract();
         let blip_r = radius * (0.18 + level * 0.76);
-        let tint = vivid_tint(band);
+        let tint = palette_tint(palette, band);
         let alpha = 0.35 + level * 0.65;
-        push_particle(
+        push_bloom_particle(
             out,
             p,
             cx + base_angle.cos() * blip_r,
@@ -1213,7 +1430,7 @@ fn build_radar_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f3
             firework_color(level, band as u32, tint, alpha),
             level,
         );
-        push_particle(
+        push_bloom_particle(
             out,
             p,
             cx + base_angle.cos() * blip_r,
@@ -1224,22 +1441,35 @@ fn build_radar_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f3
         );
         if spectrum.mirrored && outbound > 0.002 {
             let out_angle = base_angle + std::f32::consts::PI;
-            push_particle(
+            push_bloom_particle(
                 out,
                 p,
                 cx + out_angle.cos() * blip_r,
                 cy + out_angle.sin() * blip_r,
                 8.0 + outbound * 24.0,
-                firework_color(outbound, band as u32 ^ 0x7711, [1.0, 0.34, 0.08], alpha),
+                firework_color(
+                    outbound,
+                    band as u32 ^ 0x7711,
+                    palette_tint(palette, band + 1),
+                    alpha,
+                ),
                 outbound,
             );
         }
     }
 }
 
-fn build_matrix_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+fn build_matrix_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+    palette: VisualPalette,
+) {
     out.clear();
     let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
@@ -1247,7 +1477,7 @@ fn build_matrix_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f
         }
         let drops = (6.0 + level * 26.0).round() as usize;
         let x0 = MARGIN_X + band as f32 * p.slot_w;
-        let tint = vivid_tint(band);
+        let tint = palette_tint(palette, band);
         for i in 0..drops {
             let seed = (band as u32 + 1).wrapping_mul(131).wrapping_add(i as u32);
             let speed = 0.16 + level * 0.70 + hash01(seed) * 0.35;
@@ -1260,14 +1490,19 @@ fn build_matrix_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f
             } else {
                 4.0 + level * 7.0
             };
-            push_particle(
+            push_trail_bloom_particle(
                 out,
                 p,
-                x,
-                y,
-                size,
-                firework_color(level, seed, tint, alpha),
-                level,
+                TrailParticle {
+                    cx: x,
+                    cy: y,
+                    dx: 0.0,
+                    dy: p.height * (0.035 + level * 0.035),
+                    size,
+                    color: firework_color(level, seed, tint, alpha),
+                    intensity: level,
+                    steps: 4,
+                },
             );
         }
     }
@@ -1279,9 +1514,11 @@ fn build_oscilloscope_instances(
     w: f32,
     h: f32,
     time: f32,
+    palette: VisualPalette,
 ) {
     out.clear();
     let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
     for band in 0..spectrum.band_count() {
         let (inbound, outbound) = band_signed_levels(spectrum, band);
         let level = inbound.max(outbound);
@@ -1292,7 +1529,7 @@ fn build_oscilloscope_instances(
         let x0 = MARGIN_X + band as f32 * p.slot_w + p.slot_w * 0.08;
         let center = p.top + p.height * (0.50 + (hash01(band as u32) - 0.5) * 0.16);
         let amp = p.height * (0.025 + level * 0.16);
-        let tint = vivid_tint(band);
+        let tint = palette_tint(palette, band);
         let direction = if spectrum.mirrored && outbound > inbound {
             -1.0
         } else {
@@ -1304,14 +1541,19 @@ fn build_oscilloscope_instances(
             let wave = phase.sin() * 0.72 + (phase * 2.3 + band as f32).sin() * 0.28;
             let y = center - wave * amp * direction;
             let x = x0 + k * p.slot_w * 0.84;
-            push_particle(
+            push_trail_bloom_particle(
                 out,
                 p,
-                x,
-                y,
-                4.0 + level * 8.0,
-                firework_color(level, band as u32 ^ i as u32, tint, 0.34 + level * 0.62),
-                level,
+                TrailParticle {
+                    cx: x,
+                    cy: y,
+                    dx: p.slot_w * 0.045,
+                    dy: amp * direction * 0.28,
+                    size: 4.0 + level * 8.0,
+                    color: firework_color(level, band as u32 ^ i as u32, tint, 0.34 + level * 0.62),
+                    intensity: level,
+                    steps: 3,
+                },
             );
         }
         push_flat_rect(
@@ -1326,9 +1568,17 @@ fn build_oscilloscope_instances(
     }
 }
 
-fn build_pulse_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+fn build_pulse_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+    palette: VisualPalette,
+) {
     out.clear();
     let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
@@ -1336,7 +1586,7 @@ fn build_pulse_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f3
         }
         let cx = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
         let cy = p.bottom - (0.20 + level * 0.62) * p.height;
-        let tint = vivid_tint(band);
+        let tint = palette_tint(palette, band);
         for ring in 0..3 {
             let phase =
                 (time * (0.45 + level * 1.6) + ring as f32 * 0.32 + band as f32 * 0.07).fract();
@@ -1345,23 +1595,36 @@ fn build_pulse_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f3
             let alpha = (1.0 - phase) * (0.14 + level * 0.48);
             for i in 0..points {
                 let a = std::f32::consts::TAU * i as f32 / points as f32;
-                push_particle(
+                push_trail_bloom_particle(
                     out,
                     p,
-                    cx + a.cos() * radius,
-                    cy + a.sin() * radius,
-                    3.8 + level * 8.0,
-                    firework_color(level, band as u32 ^ (i as u32 * 17), tint, alpha),
-                    level,
+                    TrailParticle {
+                        cx: cx + a.cos() * radius,
+                        cy: cy + a.sin() * radius,
+                        dx: a.sin() * radius * 0.12,
+                        dy: -a.cos() * radius * 0.12,
+                        size: 3.8 + level * 8.0,
+                        color: firework_color(level, band as u32 ^ (i as u32 * 17), tint, alpha),
+                        intensity: level,
+                        steps: 3,
+                    },
                 );
             }
         }
     }
 }
 
-fn build_galaxy_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+fn build_galaxy_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+    palette: VisualPalette,
+) {
     out.clear();
     let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
@@ -1370,7 +1633,7 @@ fn build_galaxy_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f
         let cx = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
         let cy = p.top + p.height * (0.24 + 0.52 * hash01((band as u32 + 5) * 19));
         let particles = (8.0 + level * 34.0).round() as usize;
-        let tint = vivid_tint(band);
+        let tint = palette_tint(palette, band);
         for i in 0..particles {
             let seed = (band as u32 + 1)
                 .wrapping_mul(4099)
@@ -1379,17 +1642,22 @@ fn build_galaxy_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f
             let angle = time * (0.55 + level * 2.2) * if i % 2 == 0 { 1.0 } else { -1.0 }
                 + hash01(seed ^ 0x9090) * std::f32::consts::TAU;
             let squash = 0.42 + hash01(seed ^ 0x1234) * 0.38;
-            push_particle(
+            push_trail_bloom_particle(
                 out,
                 p,
-                cx + angle.cos() * orbit,
-                cy + angle.sin() * orbit * squash,
-                3.8 + level * 9.0,
-                firework_color(level, seed, tint, 0.28 + level * 0.58),
-                level,
+                TrailParticle {
+                    cx: cx + angle.cos() * orbit,
+                    cy: cy + angle.sin() * orbit * squash,
+                    dx: -angle.sin() * orbit * 0.18,
+                    dy: angle.cos() * orbit * squash * 0.18,
+                    size: 3.8 + level * 9.0,
+                    color: firework_color(level, seed, tint, 0.28 + level * 0.58),
+                    intensity: level,
+                    steps: 4,
+                },
             );
         }
-        push_particle(
+        push_bloom_particle(
             out,
             p,
             cx,
@@ -1401,16 +1669,24 @@ fn build_galaxy_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f
     }
 }
 
-fn build_lightning_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+fn build_lightning_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+    palette: VisualPalette,
+) {
     out.clear();
     let p = plot(w, h, spectrum.band_count());
+    push_trail_overlay(out, p);
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
             continue;
         }
         let bolts = (1.0 + level * 3.0).round() as usize;
-        let tint = vivid_tint(band);
+        let tint = palette_tint(palette, band);
         for bolt in 0..bolts {
             let seed_base = (band as u32 + 1)
                 .wrapping_mul(6151)
@@ -1429,7 +1705,7 @@ fn build_lightning_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h
                 let x = x_base + jitter;
                 let y = p.top + p.height * (0.10 + k * (0.78 * level + 0.12));
                 let alpha = 0.22 + level * 0.78;
-                push_particle(
+                push_bloom_particle(
                     out,
                     p,
                     x,
@@ -1457,7 +1733,7 @@ fn build_lightning_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h
                     };
                     for b in 0..4 {
                         let bk = b as f32 / 4.0;
-                        push_particle(
+                        push_bloom_particle(
                             out,
                             p,
                             x + branch_dir * p.slot_w * 0.08 * b as f32,
