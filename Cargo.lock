@@ -1187,6 +1187,7 @@ dependencies = [
  "crossbeam-channel",
  "etherparse",
  "glyphon",
+ "naga",
  "pcap",
  "pollster",
  "wgpu",

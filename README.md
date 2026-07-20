@@ -64,6 +64,8 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | Key       | Action                                                  |
 |-----------|---------------------------------------------------------|
 | `1`-`5`   | Switch between the live views listed above              |
+| `B`       | Use the classic bar renderer                            |
+| `F`       | Use the fireworks renderer                              |
 | `S`       | Toggle LED segmentation on the bars                     |
 | `A`       | Toggle optional audio feedback                          |
 | `T`       | Cycle through the tone palettes                         |
@@ -79,6 +81,9 @@ instead of restoring the frame; this is tracked in issue #16.
 
 * Bar height is **log-scaled bytes/sec** with slow-decaying auto-gain, so both
   an idle home link and a saturated 10G port look right without configuration.
+* The default `B` renderer is the classic bar view. The `F` renderer keeps the
+  same bands but turns each band's traffic intensity into expanding firework
+  bursts with more particles, size, and glow as traffic gets louder.
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.

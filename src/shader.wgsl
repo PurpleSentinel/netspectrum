@@ -1,9 +1,11 @@
 // Instanced bar renderer.
 // rect   = (x0, y0, x1, y1) in NDC; y0 is the bar base, y1 the lit tip.
 // color  = tint (rgb) and base alpha.
-// params = (value, flat_flag, segments_flag, unused)
+// params = (value, draw_mode, segments_flag, unused)
 //   value: bar height as fraction of full scale -- drives the colour ramp
-//   flat_flag > 0.5: draw solid colour (peak caps, ghost slots)
+//   draw_mode 0.0: draw bar segment
+//   draw_mode 1.0: draw solid colour (peak caps, ghost slots)
+//   draw_mode 2.0: draw soft particle sprite
 //   segments_flag > 0.5: quantise into LED segments
 
 struct VsIn {
@@ -39,10 +41,20 @@ fn vs_main(@builtin(vertex_index) vi: u32, vin: VsIn) -> VsOut {
 @fragment
 fn fs_main(vout: VsOut) -> @location(0) vec4<f32> {
     let value = vout.params.x;
-    let flat_flag = vout.params.y;
+    let draw_mode = vout.params.y;
     let seg_flag = vout.params.z;
 
-    if (flat_flag > 0.5) {
+    if (draw_mode > 1.5) {
+        let p = vout.uv * 2.0 - vec2<f32>(1.0, 1.0);
+        let dist = length(p);
+        let glow = smoothstep(1.0, 0.0, dist);
+        let core = smoothstep(0.22, 0.0, dist);
+        let alpha = vout.color.a * (glow * glow + core * 0.85);
+        let col = vout.color.rgb + vec3<f32>(core * 0.45);
+        return vec4<f32>(col, alpha);
+    }
+
+    if (draw_mode > 0.5) {
         return vout.color;
     }
 
