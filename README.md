@@ -60,8 +60,9 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | 5   | `sizes`    | Packet-size histogram: tiny ACKs on the left, full-MTU bulk transfer on the right |
 
 Other keys: `S` toggles LED segmentation, `A` toggles audio feedback, `T`
-cycles tone palettes, `Z` toggles the dark-blue background transparency, `X`
-toggles the grey bar backing transparency, `Q`/`Esc` quits.
+cycles tone palettes, `W` toggles the window frame and controls, `Z` toggles
+the dark-blue background transparency, `X` toggles the grey bar backing
+transparency, `Q`/`Esc` quits.
 
 ## Reading it
 
