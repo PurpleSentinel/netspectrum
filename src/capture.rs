@@ -41,12 +41,14 @@ fn parse(data: &[u8], wire_len: u32, local: &HashSet<IpAddr>) -> Option<PacketMe
     };
 
     let (src, dst) = match &sliced.ip {
-        Some(InternetSlice::Ipv4(h, _)) => {
-            (IpAddr::V4(h.source_addr()), IpAddr::V4(h.destination_addr()))
-        }
-        Some(InternetSlice::Ipv6(h, _)) => {
-            (IpAddr::V6(h.source_addr()), IpAddr::V6(h.destination_addr()))
-        }
+        Some(InternetSlice::Ipv4(h, _)) => (
+            IpAddr::V4(h.source_addr()),
+            IpAddr::V4(h.destination_addr()),
+        ),
+        Some(InternetSlice::Ipv6(h, _)) => (
+            IpAddr::V6(h.source_addr()),
+            IpAddr::V6(h.destination_addr()),
+        ),
         None => (UNSPEC, UNSPEC),
     };
 
@@ -83,13 +85,12 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
-            let cap = pcap::Capture::from_device(iface.as_str())
-                .and_then(|c| {
-                    c.promisc(true)
-                        .immediate_mode(true)
-                        .snaplen(96) // headers only; payloads never captured
-                        .open()
-                });
+            let cap = pcap::Capture::from_device(iface.as_str()).and_then(|c| {
+                c.promisc(true)
+                    .immediate_mode(true)
+                    .snaplen(96) // headers only; payloads never captured
+                    .open()
+            });
 
             let mut cap = match cap {
                 Ok(c) => c,

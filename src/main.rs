@@ -48,8 +48,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mode = Mode::from_str(&args.mode)
-        .with_context(|| format!("unknown mode '{}' (protocol|ports|hosts|hybrid|sizes)", args.mode))?;
+    let mode = Mode::from_str(&args.mode).with_context(|| {
+        format!(
+            "unknown mode '{}' (protocol|ports|hosts|hybrid|sizes)",
+            args.mode
+        )
+    })?;
 
     let device = match &args.interface {
         Some(name) => devices
@@ -57,12 +61,9 @@ fn main() -> Result<()> {
             .find(|d| &d.name == name)
             .cloned()
             .with_context(|| format!("interface '{name}' not found (try --list)"))?,
-        None => {
-            let d = pcap::Device::lookup()
-                .context("looking up default device")?
-                .context("no capture device available (try --list, run as root)")?;
-            d
-        }
+        None => pcap::Device::lookup()
+            .context("looking up default device")?
+            .context("no capture device available (try --list, run as root)")?,
     };
 
     if device.addresses.is_empty() {

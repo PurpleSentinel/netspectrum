@@ -41,8 +41,24 @@ impl Mode {
 // ---------------------------------------------------------------- protocol map
 
 const PROTO_LABELS: [&str; 18] = [
-    "ARP", "ICMP", "DHCP", "NTP", "DNS", "mDNS/SSDP", "HTTP", "TLS", "QUIC", "SSH", "RDP/VNC",
-    "SMB/NFS", "MAIL", "DB", "SYSLOG", "TCP other", "UDP other", "other",
+    "ARP",
+    "ICMP",
+    "DHCP",
+    "NTP",
+    "DNS",
+    "mDNS/SSDP",
+    "HTTP",
+    "TLS",
+    "QUIC",
+    "SSH",
+    "RDP/VNC",
+    "SMB/NFS",
+    "MAIL",
+    "DB",
+    "SYSLOG",
+    "TCP other",
+    "UDP other",
+    "other",
 ];
 const ARP: usize = 0;
 const ICMP: usize = 1;
@@ -109,7 +125,14 @@ fn proto_band(m: &PacketMeta) -> usize {
 
 // Condensed groups for the mirrored hybrid view.
 const GROUP_LABELS: [&str; 8] = [
-    "WEB", "DNS", "REMOTE", "MAIL", "INFRA", "DISCOVERY", "DATA", "OTHER",
+    "WEB",
+    "DNS",
+    "REMOTE",
+    "MAIL",
+    "INFRA",
+    "DISCOVERY",
+    "DATA",
+    "OTHER",
 ];
 
 fn group_band(m: &PacketMeta) -> usize {
@@ -147,7 +170,14 @@ fn port_band(m: &PacketMeta) -> usize {
 
 const SIZE_EDGES: [u32; 7] = [64, 128, 256, 512, 1024, 1280, 1518];
 const SIZE_LABELS: [&str; 8] = [
-    "<=64", "65-128", "129-256", "257-512", "513-1k", "1k-1.2k", "1.2k-1.5k", "jumbo",
+    "<=64",
+    "65-128",
+    "129-256",
+    "257-512",
+    "513-1k",
+    "1k-1.2k",
+    "1.2k-1.5k",
+    "jumbo",
 ];
 
 fn size_band(m: &PacketMeta) -> usize {
@@ -176,9 +206,9 @@ pub struct Spectrum {
     pub disp: Vec<f32>,
     pub peak: Vec<f32>,
     peak_hold_until: Vec<f32>,
-    acc: Vec<f64>,       // bytes accumulated since last tick
-    rate_ema: Vec<f64>,  // smoothed bytes/sec for readouts
-    max_rate: f64,       // auto-gain reference (full scale)
+    acc: Vec<f64>,      // bytes accumulated since last tick
+    rate_ema: Vec<f64>, // smoothed bytes/sec for readouts
+    max_rate: f64,      // auto-gain reference (full scale)
     clock: f32,
 
     pub rate_in: f64,
@@ -309,11 +339,15 @@ impl Spectrum {
         }
         let log_full = (1.0 + self.max_rate).ln();
 
-        for i in 0..self.acc.len() {
-            self.rate_ema[i] += (rates[i] - self.rate_ema[i]) * k_rate as f64;
+        for (i, rate) in rates.iter().enumerate() {
+            self.rate_ema[i] += (*rate - self.rate_ema[i]) * k_rate as f64;
 
-            let norm = (((1.0 + rates[i]).ln() / log_full) as f32).clamp(0.0, 1.0);
-            let k = if norm > self.disp[i] { k_attack } else { k_release };
+            let norm = (((1.0 + *rate).ln() / log_full) as f32).clamp(0.0, 1.0);
+            let k = if norm > self.disp[i] {
+                k_attack
+            } else {
+                k_release
+            };
             self.disp[i] += (norm - self.disp[i]) * k;
 
             if self.disp[i] >= self.peak[i] {
@@ -347,7 +381,11 @@ impl Spectrum {
         let mut ranked: Vec<(IpAddr, f64)> =
             self.host_bytes.iter().map(|(k, v)| (*k, *v)).collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let top: Vec<IpAddr> = ranked.iter().take(self.n_hosts).map(|(ip, _)| *ip).collect();
+        let top: Vec<IpAddr> = ranked
+            .iter()
+            .take(self.n_hosts)
+            .map(|(ip, _)| *ip)
+            .collect();
 
         // Hysteresis: keep an occupant if it's still in the top 2N; fill gaps with
         // the best newcomers so bars don't reshuffle constantly.
@@ -366,7 +404,7 @@ impl Spectrum {
             }
         }
         for ip in top {
-            if self.host_slots.iter().any(|s| *s == Some(ip)) {
+            if self.host_slots.contains(&Some(ip)) {
                 continue;
             }
             if let Some(free) = self.host_slots.iter().position(|s| s.is_none()) {
