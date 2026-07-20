@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 
+use audio::AudioConfig;
 use bands::{Mode, Spectrum};
 
 /// A GPU-accelerated graphic equaliser for passively observed network traffic.
@@ -34,6 +35,10 @@ struct Args {
     /// List capture interfaces and exit
     #[arg(long)]
     list: bool,
+
+    /// Optional audio output target for pw-cat/pacat, e.g. an HDMI sink name
+    #[arg(long)]
+    audio_output: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -85,5 +90,12 @@ fn main() -> Result<()> {
 
     let rx = capture::spawn(iface.clone(), args.filter.clone(), local);
     let spectrum = Spectrum::new(mode, args.hosts);
-    render::run(spectrum, rx, iface)
+    render::run(
+        spectrum,
+        rx,
+        iface,
+        AudioConfig {
+            output: args.audio_output,
+        },
+    )
 }
