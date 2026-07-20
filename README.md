@@ -59,10 +59,10 @@ Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.
-* Optional audio follows the current system default output through `pw-cat`.
-  Volume and routing stay under your desktop/system audio controls. In the
-  mirrored hybrid view, inbound and outbound use separate tones so outbound
-  traffic keeps its negative-flow character.
+* Optional audio follows the current system default output through `pw-cat`
+  with `pacat` fallback. Volume and routing stay under your desktop/system
+  audio controls. In the mirrored hybrid view, inbound and outbound use separate
+  tones so outbound traffic keeps its negative-flow character.
 * Under each band: its name and a smoothed live rate. The header shows total
   in/out throughput.
 
@@ -82,3 +82,5 @@ Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
   own host's traffic plus broadcast/multicast unless you're on a mirror/SPAN port.
 * Direction detection uses the interface's own addresses; traffic not involving
   a local address counts as inbound.
+* If `A` shows `audio n/a`, check that PipeWire/PulseAudio is running and that
+  `pw-cat` or `pacat` is installed.
