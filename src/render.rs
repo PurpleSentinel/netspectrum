@@ -37,6 +37,16 @@ const MARGIN_X: f32 = 26.0;
 const TOP: f32 = 56.0;
 const BOTTOM_LABELS: f32 = 46.0;
 const DECORATION_REFRESH_FRAMES: u8 = 4;
+const DRAW_MODE_BAR: f32 = 0.0;
+const DRAW_MODE_FLAT: f32 = 1.0;
+const DRAW_MODE_PARTICLE: f32 = 2.0;
+const MAX_FIREWORK_PARTICLES_PER_BAND: usize = 56;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum VisualStyle {
+    Bars,
+    Fireworks,
+}
 
 pub fn run(
     mut spectrum: Spectrum,
@@ -144,8 +154,10 @@ pub fn run(
     let mut transparent_bars = false;
     let mut window_decorated = true;
     let mut decoration_refresh_frames = 0u8;
+    let mut visual_style = VisualStyle::Bars;
     let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
+    let mut animation_time = 0.0f32;
     let mut label_refresh = 0.0f32;
     let mut instances: Vec<Inst> = Vec::with_capacity(MAX_INSTANCES);
 
@@ -176,6 +188,8 @@ pub fn run(
                     KeyCode::Digit4 => spectrum.set_mode(Mode::Hybrid),
                     KeyCode::Digit5 => spectrum.set_mode(Mode::Sizes),
                     KeyCode::KeyS => segments = !segments,
+                    KeyCode::KeyB => visual_style = VisualStyle::Bars,
+                    KeyCode::KeyF => visual_style = VisualStyle::Fireworks,
                     KeyCode::KeyW => {
                         window_decorated = next_window_decoration_request(window.is_decorated());
                         decoration_refresh_frames = DECORATION_REFRESH_FRAMES;
@@ -202,6 +216,7 @@ pub fn run(
                 let now = Instant::now();
                 let dt = (now - last).as_secs_f32();
                 last = now;
+                animation_time += dt;
 
                 for m in rx.try_iter() {
                     spectrum.ingest(&m);
@@ -218,7 +233,14 @@ pub fn run(
 
                 let w = config.width as f32;
                 let h = config.height as f32;
-                build_instances(&mut instances, &spectrum, w, h, segments, transparent_bars);
+                match visual_style {
+                    VisualStyle::Bars => {
+                        build_instances(&mut instances, &spectrum, w, h, segments, transparent_bars)
+                    }
+                    VisualStyle::Fireworks => {
+                        build_firework_instances(&mut instances, &spectrum, w, h, animation_time)
+                    }
+                }
                 queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances));
 
                 // Header text.
@@ -234,12 +256,14 @@ pub fn run(
                 let background_label = if transparent_background { "bg clr" } else { "bg on" };
                 let bars_label = if transparent_bars { "bar clr" } else { "bar gry" };
                 let frame_label = window_frame_label(window_decorated);
+                let visual_label = visual_style_label(visual_style);
                 let header = format!(
-                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
+                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  B/F {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
                     human_rate(spectrum.rate_out),
+                    visual_label,
                     audio_label,
                     tone_label,
                     frame_label,
@@ -408,6 +432,40 @@ fn apply_window_decorations(window: &Window, decorated: bool) {
     window.request_redraw();
 }
 
+fn visual_style_label(style: VisualStyle) -> &'static str {
+    match style {
+        VisualStyle::Bars => "bars",
+        VisualStyle::Fireworks => "fire",
+    }
+}
+
+fn firework_particle_count(intensity: f32) -> usize {
+    if intensity <= 0.002 {
+        return 0;
+    }
+
+    (10.0 + intensity.clamp(0.0, 1.0) * 46.0).round() as usize
+}
+
+fn hash01(seed: u32) -> f32 {
+    let mut x = seed.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x as f32 / u32::MAX as f32
+}
+
+fn firework_color(intensity: f32, seed: u32, tint: [f32; 3], alpha: f32) -> [f32; 4] {
+    let sparkle = hash01(seed);
+    let hot = intensity.clamp(0.0, 1.0);
+    [
+        (tint[0] * (0.95 + 0.35 * hot) + sparkle * 0.25).min(1.0),
+        (tint[1] * (0.92 + 0.38 * hot) + sparkle * 0.23).min(1.0),
+        (tint[2] * (0.90 + 0.40 * hot) + sparkle * 0.22).min(1.0),
+        alpha.clamp(0.0, 1.0),
+    ]
+}
+
 fn rebuild_labels(
     font_system: &mut FontSystem,
     label_bufs: &mut Vec<TextBuffer>,
@@ -445,8 +503,9 @@ fn rebuild_labels(
 #[cfg(test)]
 mod tests {
     use super::{
-        background_color, build_instances, next_window_decoration_request, preferred_alpha_mode,
-        surface_extent, window_frame_label,
+        background_color, build_firework_instances, build_instances, firework_particle_count,
+        next_window_decoration_request, preferred_alpha_mode, surface_extent, visual_style_label,
+        window_frame_label, VisualStyle, DRAW_MODE_PARTICLE,
     };
     use crate::bands::{Mode, Spectrum};
 
@@ -471,6 +530,17 @@ mod tests {
     fn window_frame_label_tracks_decoration_state() {
         assert_eq!(window_frame_label(true), "frame");
         assert_eq!(window_frame_label(false), "bare");
+    }
+
+    #[test]
+    fn visual_style_label_tracks_selected_renderer() {
+        assert_eq!(visual_style_label(VisualStyle::Bars), "bars");
+        assert_eq!(visual_style_label(VisualStyle::Fireworks), "fire");
+    }
+
+    #[test]
+    fn shader_wgsl_parses() {
+        naga::front::wgsl::parse_str(include_str!("shader.wgsl")).expect("shader should parse");
     }
 
     #[test]
@@ -505,6 +575,29 @@ mod tests {
 
         build_instances(&mut instances, &spectrum, 1280.0, 720.0, true, true);
         assert!(instances.iter().all(|inst| inst.color[3] == 0.0));
+    }
+
+    #[test]
+    fn firework_particle_count_scales_with_intensity() {
+        assert_eq!(firework_particle_count(0.0), 0);
+        assert!(firework_particle_count(0.15) >= 16);
+        assert!(firework_particle_count(0.9) > firework_particle_count(0.2));
+        assert!(firework_particle_count(1.0) >= 50);
+    }
+
+    #[test]
+    fn fireworks_emit_more_particles_for_louder_bands() {
+        let mut spectrum = Spectrum::new(Mode::Protocol, 12);
+        let mut quiet = Vec::new();
+        spectrum.disp[0] = 0.15;
+        build_firework_instances(&mut quiet, &spectrum, 1280.0, 720.0, 0.25);
+
+        let mut loud = Vec::new();
+        spectrum.disp[0] = 0.90;
+        build_firework_instances(&mut loud, &spectrum, 1280.0, 720.0, 0.25);
+
+        assert!(loud.len() > quiet.len());
+        assert!(loud.iter().all(|inst| inst.params[1] == DRAW_MODE_PARTICLE));
     }
 }
 
@@ -564,7 +657,7 @@ fn build_instances(
                 x1,
                 plot_top,
                 ghost,
-                [1.0, 1.0, 0.0, 0.0],
+                [1.0, DRAW_MODE_FLAT, 0.0, 0.0],
             );
 
             let v = spectrum.disp[i];
@@ -577,7 +670,7 @@ fn build_instances(
                     x1,
                     tip,
                     white,
-                    [v, 0.0, seg_flag, 0.0],
+                    [v, DRAW_MODE_BAR, seg_flag, 0.0],
                 );
             }
             let p = spectrum.peak[i];
@@ -590,7 +683,7 @@ fn build_instances(
                     x1,
                     py - 1.5,
                     peak_col,
-                    [p, 1.0, 0.0, 0.0],
+                    [p, DRAW_MODE_FLAT, 0.0, 0.0],
                 );
             }
         }
@@ -609,7 +702,7 @@ fn build_instances(
                 x1,
                 plot_top,
                 ghost,
-                [1.0, 1.0, 0.0, 0.0],
+                [1.0, DRAW_MODE_FLAT, 0.0, 0.0],
             );
             // Centre line tick.
             push(
@@ -619,13 +712,21 @@ fn build_instances(
                 x1,
                 mid - 1.0,
                 [1.0, 1.0, 1.0, 0.16],
-                [0.0, 1.0, 0.0, 0.0],
+                [0.0, DRAW_MODE_FLAT, 0.0, 0.0],
             );
 
             let up = spectrum.disp[g * 2];
             if up > 0.002 {
                 let tip = mid - up * half_h;
-                push(out, x0, mid, x1, tip, tint_in, [up, 0.0, seg_flag, 0.0]);
+                push(
+                    out,
+                    x0,
+                    mid,
+                    x1,
+                    tip,
+                    tint_in,
+                    [up, DRAW_MODE_BAR, seg_flag, 0.0],
+                );
             }
             let pu = spectrum.peak[g * 2];
             if pu > 0.004 {
@@ -637,14 +738,22 @@ fn build_instances(
                     x1,
                     py - 1.5,
                     peak_col,
-                    [pu, 1.0, 0.0, 0.0],
+                    [pu, DRAW_MODE_FLAT, 0.0, 0.0],
                 );
             }
 
             let down = spectrum.disp[g * 2 + 1];
             if down > 0.002 {
                 let tip = mid + down * half_h;
-                push(out, x0, mid, x1, tip, tint_out, [down, 0.0, seg_flag, 0.0]);
+                push(
+                    out,
+                    x0,
+                    mid,
+                    x1,
+                    tip,
+                    tint_out,
+                    [down, DRAW_MODE_BAR, seg_flag, 0.0],
+                );
             }
             let pd = spectrum.peak[g * 2 + 1];
             if pd > 0.004 {
@@ -656,9 +765,144 @@ fn build_instances(
                     x1,
                     py + 1.5,
                     peak_col,
-                    [pd, 1.0, 0.0, 0.0],
+                    [pd, DRAW_MODE_FLAT, 0.0, 0.0],
                 );
             }
+        }
+    }
+}
+
+fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+    out.clear();
+    let ndc_x = |px: f32| px / w * 2.0 - 1.0;
+    let ndc_y = |py: f32| 1.0 - py / h * 2.0;
+
+    let plot_top = TOP + 6.0;
+    let plot_bottom = h - BOTTOM_LABELS - 4.0;
+    let plot_h = (plot_bottom - plot_top).max(1.0);
+    let n = spectrum.band_count().max(1) as f32;
+    let slot_w = (w - 2.0 * MARGIN_X) / n;
+
+    let push_particle =
+        |out: &mut Vec<Inst>, cx: f32, cy: f32, size: f32, color: [f32; 4], intensity: f32| {
+            if out.len() < MAX_INSTANCES {
+                let r = size * 0.5;
+                out.push(Inst {
+                    rect: [ndc_x(cx - r), ndc_y(cy + r), ndc_x(cx + r), ndc_y(cy - r)],
+                    color,
+                    params: [intensity, DRAW_MODE_PARTICLE, 0.0, 0.0],
+                });
+            }
+        };
+
+    let emit_firework = |out: &mut Vec<Inst>,
+                         band: usize,
+                         cx: f32,
+                         base_y: f32,
+                         burst_y: f32,
+                         intensity: f32,
+                         tint: [f32; 3]| {
+        let count = firework_particle_count(intensity);
+        if count == 0 {
+            return;
+        }
+
+        let phase = (time * (0.48 + intensity * 1.25) + band as f32 * 0.137).fract();
+        let fade = (1.0 - phase).powf(0.75);
+        let radius =
+            (slot_w * (0.22 + intensity * 1.05)).min(plot_h * 0.30) * (0.18 + phase * 1.25);
+        let seed_base = (band as u32 + 1).wrapping_mul(7919);
+
+        let trail_count = (5.0 + intensity * 11.0).round() as usize;
+        for trail in 0..trail_count {
+            let k = (trail + 1) as f32 / (trail_count + 1) as f32;
+            let wobble = (hash01(seed_base ^ trail as u32) - 0.5) * slot_w * 0.16;
+            let y = base_y + (burst_y - base_y) * k;
+            let alpha = (0.12 + intensity * 0.32) * (1.0 - k * 0.40);
+            let color = firework_color(intensity, seed_base ^ trail as u32, tint, alpha);
+            push_particle(out, cx + wobble, y, 4.0 + intensity * 7.0, color, intensity);
+        }
+
+        let core_alpha = (0.28 + intensity * 0.72) * fade;
+        let core_size = 11.0 + intensity * 38.0 * (1.0 - phase * 0.25);
+        push_particle(
+            out,
+            cx,
+            burst_y,
+            core_size,
+            firework_color(intensity, seed_base ^ 0xa5a5, tint, core_alpha),
+            intensity,
+        );
+
+        for i in 0..count.min(MAX_FIREWORK_PARTICLES_PER_BAND) {
+            let seed = seed_base ^ ((i as u32 + 3).wrapping_mul(104_729));
+            let angle =
+                std::f32::consts::TAU * (i as f32 / count as f32 + (hash01(seed) - 0.5) * 0.10);
+            let scatter = 0.78 + hash01(seed ^ 0x3456) * 0.46;
+            let gravity = phase * phase * radius * 0.42;
+            let px = cx + angle.cos() * radius * scatter;
+            let py = burst_y + angle.sin() * radius * scatter + gravity;
+            let size = 4.5 + intensity * 13.0 * (1.0 - phase * 0.18);
+            let alpha = fade * (0.32 + intensity * 0.88) * (0.82 + hash01(seed ^ 0x789a) * 0.34);
+            let color = firework_color(intensity, seed, tint, alpha);
+            push_particle(out, px, py, size, color, intensity);
+
+            if i % 2 == 0 {
+                let inner_px = cx + angle.cos() * radius * scatter * 0.45;
+                let inner_py = burst_y + angle.sin() * radius * scatter * 0.45 + gravity * 0.35;
+                let inner_alpha = alpha * (0.68 + intensity * 0.24);
+                push_particle(
+                    out,
+                    inner_px,
+                    inner_py,
+                    size * 0.72,
+                    firework_color(intensity, seed ^ 0xd00d, tint, inner_alpha),
+                    intensity,
+                );
+            }
+        }
+    };
+
+    if !spectrum.mirrored {
+        for band in 0..spectrum.band_count() {
+            let intensity = spectrum.disp[band].clamp(0.0, 1.0);
+            let cx = MARGIN_X + (band as f32 + 0.5) * slot_w;
+            let base_y = plot_bottom;
+            let burst_y = plot_bottom - (0.16 + intensity * 0.74) * plot_h;
+            let tint = match band % 4 {
+                0 => [0.05, 1.0, 0.95],
+                1 => [1.0, 0.92, 0.05],
+                2 => [1.0, 0.08, 0.45],
+                _ => [0.42, 0.18, 1.0],
+            };
+            emit_firework(out, band, cx, base_y, burst_y, intensity, tint);
+        }
+    } else {
+        let mid = (plot_top + plot_bottom) * 0.5;
+        let half_h = plot_h * 0.5 - 2.0;
+        for band in 0..spectrum.band_count() {
+            let cx = MARGIN_X + (band as f32 + 0.5) * slot_w;
+            let inbound = spectrum.disp[band * 2].clamp(0.0, 1.0);
+            let outbound = spectrum.disp[band * 2 + 1].clamp(0.0, 1.0);
+
+            emit_firework(
+                out,
+                band * 2,
+                cx,
+                mid,
+                mid - (0.10 + inbound * 0.82) * half_h,
+                inbound,
+                [0.02, 0.95, 1.0],
+            );
+            emit_firework(
+                out,
+                band * 2 + 1,
+                cx,
+                mid,
+                mid + (0.10 + outbound * 0.82) * half_h,
+                outbound,
+                [1.0, 0.28, 0.02],
+            );
         }
     }
 }
