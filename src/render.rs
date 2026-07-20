@@ -24,6 +24,8 @@ use crate::capture::PacketMeta;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+// Per-instance payload consumed by shader.wgsl. Every visual is reduced to
+// rectangles or particle sprites using this same layout.
 struct Inst {
     rect: [f32; 4],
     color: [f32; 4],
@@ -43,6 +45,7 @@ const DRAW_MODE_PARTICLE: f32 = 2.0;
 const MAX_FIREWORK_PARTICLES_PER_BAND: usize = 56;
 const TRAIL_OVERLAY_ALPHA: f32 = 0.075;
 
+/// Selects which visual builder converts the Spectrum into GPU instances.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum VisualStyle {
     Bars,
@@ -55,6 +58,7 @@ enum VisualStyle {
     Lightning,
 }
 
+/// Colour sets used by particle-based renderers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum VisualPalette {
     Neon,
@@ -63,6 +67,7 @@ enum VisualPalette {
     Candy,
 }
 
+/// Controls how much glyphon text is overlaid on top of the visual.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum HudDetail {
     Full,
@@ -70,6 +75,7 @@ enum HudDetail {
     Hidden,
 }
 
+/// Physical-pixel plot area shared by all renderers.
 #[derive(Copy, Clone)]
 struct Plot {
     w: f32,
@@ -80,6 +86,7 @@ struct Plot {
     slot_w: f32,
 }
 
+/// Frame-local switches passed to the selected visual builder.
 #[derive(Copy, Clone)]
 struct VisualBuildOptions {
     segments: bool,
@@ -90,6 +97,7 @@ struct VisualBuildOptions {
 }
 
 impl VisualPalette {
+    /// Cycle through palettes in UI order.
     fn next(self) -> Self {
         match self {
             VisualPalette::Neon => VisualPalette::Solar,
@@ -99,6 +107,7 @@ impl VisualPalette {
         }
     }
 
+    /// Short label shown in the HUD.
     fn name(self) -> &'static str {
         match self {
             VisualPalette::Neon => "neon",
@@ -110,6 +119,7 @@ impl VisualPalette {
 }
 
 impl HudDetail {
+    /// Cycle full -> compact -> hidden -> full.
     fn next(self) -> Self {
         match self {
             HudDetail::Full => HudDetail::Compact,
@@ -118,6 +128,7 @@ impl HudDetail {
         }
     }
 
+    /// Short label shown in the HUD.
     fn name(self) -> &'static str {
         match self {
             HudDetail::Full => "full",
@@ -126,15 +137,18 @@ impl HudDetail {
         }
     }
 
+    /// Hidden mode suppresses all text preparation and rendering.
     fn shows_header(self) -> bool {
         !matches!(self, HudDetail::Hidden)
     }
 
+    /// Only full mode shows per-band labels and live rates.
     fn shows_labels(self) -> bool {
         matches!(self, HudDetail::Full)
     }
 }
 
+/// Run the winit/wgpu application loop until the window exits.
 pub fn run(
     mut spectrum: Spectrum,
     rx: Receiver<PacketMeta>,
@@ -255,6 +269,8 @@ pub fn run(
             WindowEvent::CloseRequested => elwt.exit(),
             WindowEvent::Resized(new_size) => {
                 if new_size.width > 0 && new_size.height > 0 {
+                    // Clamp to adapter limits before configuring the swapchain;
+                    // some drivers reject oversized transparent windows.
                     (config.width, config.height) =
                         surface_extent(new_size.width, new_size.height, max_surface_extent);
                     surface.configure(&device, &config);
@@ -270,6 +286,8 @@ pub fn run(
                     },
                 ..
             } => {
+                // All interactive controls are handled here so renderer state
+                // changes are synchronized with the next redraw.
                 match code {
                     KeyCode::Digit1 => spectrum.set_mode(Mode::Protocol),
                     KeyCode::Digit2 => spectrum.set_mode(Mode::Ports),
@@ -306,6 +324,8 @@ pub fn run(
             }
             WindowEvent::RedrawRequested => {
                 if decoration_refresh_frames > 0 {
+                    // Some window managers need a few frames of repeated
+                    // decoration requests before the frame state sticks.
                     apply_window_decorations(&window, window_decorated);
                     decoration_refresh_frames -= 1;
                 }
@@ -315,6 +335,8 @@ pub fn run(
                 last = now;
                 animation_time += dt;
 
+                // Drain pending packet metadata for this frame, then run one
+                // signal-processing tick before building GPU instances.
                 for m in rx.try_iter() {
                     spectrum.ingest(&m);
                 }
@@ -323,6 +345,8 @@ pub fn run(
 
                 label_refresh -= dt;
                 if spectrum.labels_dirty || label_refresh <= 0.0 {
+                    // Re-shaping text is relatively expensive, so refresh
+                    // labels at a modest cadence unless the mode changed.
                     rebuild_labels(&mut font_system, &mut label_bufs, &spectrum, &config);
                     spectrum.labels_dirty = false;
                     label_refresh = 0.25;
@@ -345,7 +369,8 @@ pub fn run(
                 );
                 queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances));
 
-                // Header text.
+                // Header text is rebuilt every frame because throughput and
+                // live toggle labels are dynamic.
                 let audio_snapshot = audio.snapshot();
                 let audio_label = if audio_snapshot.enabled {
                     "audio on"
@@ -457,6 +482,8 @@ pub fn run(
                     // Text failure should never kill the visualiser.
                 }
 
+                // Draw visual instances first, then glyphon text in the same
+                // render pass using alpha blending.
                 let frame = match surface.get_current_texture() {
                     Ok(f) => f,
                     Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
@@ -509,6 +536,8 @@ fn surface_extent(width: u32, height: u32, max_texture_dimension_2d: u32) -> (u3
     (width.clamp(1, max_extent), height.clamp(1, max_extent))
 }
 
+/// Prefer alpha-capable surface modes so the background transparency toggle can
+/// work on compositors that support it.
 fn preferred_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlphaMode {
     [
         wgpu::CompositeAlphaMode::PreMultiplied,
@@ -522,6 +551,7 @@ fn preferred_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAl
     .unwrap_or(wgpu::CompositeAlphaMode::Opaque)
 }
 
+/// Swapchain clear colour. Transparent mode keeps RGB black with zero alpha.
 fn background_color(transparent: bool) -> wgpu::Color {
     if transparent {
         return wgpu::Color {
@@ -540,6 +570,7 @@ fn background_color(transparent: bool) -> wgpu::Color {
     }
 }
 
+/// HUD label for the current window decoration state.
 fn window_frame_label(decorated: bool) -> &'static str {
     if decorated {
         "frame"
@@ -548,10 +579,12 @@ fn window_frame_label(decorated: bool) -> &'static str {
     }
 }
 
+/// Compute the next requested decoration state from the current window state.
 fn next_window_decoration_request(currently_decorated: bool) -> bool {
     !currently_decorated
 }
 
+/// Apply frame/titlebar visibility and ask the compositor to preserve size.
 fn apply_window_decorations(window: &Window, decorated: bool) {
     let inner_size = window.inner_size();
     window.set_decorations(decorated);
@@ -560,6 +593,7 @@ fn apply_window_decorations(window: &Window, decorated: bool) {
     window.request_redraw();
 }
 
+/// Short HUD label for the selected visual renderer.
 fn visual_style_label(style: VisualStyle) -> &'static str {
     match style {
         VisualStyle::Bars => "bars",
@@ -573,6 +607,7 @@ fn visual_style_label(style: VisualStyle) -> &'static str {
     }
 }
 
+/// Dispatch to the active renderer while keeping one shared output buffer.
 fn build_visual_instances(
     out: &mut Vec<Inst>,
     spectrum: &Spectrum,
@@ -613,6 +648,7 @@ fn build_visual_instances(
     }
 }
 
+/// Compute the drawable plot rectangle used by particle renderers.
 fn plot(w: f32, h: f32, band_count: usize) -> Plot {
     let top = TOP + 6.0;
     let bottom = h - BOTTOM_LABELS - 4.0;
@@ -628,14 +664,17 @@ fn plot(w: f32, h: f32, band_count: usize) -> Plot {
     }
 }
 
+/// Convert physical pixel x-coordinate into normalized device coordinates.
 fn ndc_x(px: f32, w: f32) -> f32 {
     px / w * 2.0 - 1.0
 }
 
+/// Convert physical pixel y-coordinate into normalized device coordinates.
 fn ndc_y(py: f32, h: f32) -> f32 {
     1.0 - py / h * 2.0
 }
 
+/// Push one instanced rectangle after converting from pixels to NDC.
 fn push_instance(
     out: &mut Vec<Inst>,
     plot: Plot,
@@ -657,6 +696,7 @@ fn push_instance(
     }
 }
 
+/// Push one circular soft particle sprite, represented as a square instance.
 fn push_particle(
     out: &mut Vec<Inst>,
     plot: Plot,
@@ -676,6 +716,7 @@ fn push_particle(
     );
 }
 
+/// Push a faint oversized glow sprite plus the main particle.
 fn push_bloom_particle(
     out: &mut Vec<Inst>,
     plot: Plot,
@@ -690,6 +731,7 @@ fn push_bloom_particle(
     push_particle(out, plot, cx, cy, size, color, intensity);
 }
 
+/// Particle plus its motion vector used for deterministic blur trails.
 struct TrailParticle {
     cx: f32,
     cy: f32,
@@ -701,6 +743,7 @@ struct TrailParticle {
     steps: usize,
 }
 
+/// Draw fading ghost particles behind a moving bloom particle.
 fn push_trail_bloom_particle(out: &mut Vec<Inst>, plot: Plot, particle: TrailParticle) {
     let steps = particle.steps.min(5);
     for step in (1..=steps).rev() {
@@ -733,6 +776,7 @@ fn push_trail_bloom_particle(out: &mut Vec<Inst>, plot: Plot, particle: TrailPar
     );
 }
 
+/// Push a flat-colour rectangle for caps, baselines, and overlays.
 fn push_flat_rect(
     out: &mut Vec<Inst>,
     plot: Plot,
@@ -751,6 +795,7 @@ fn push_flat_rect(
     );
 }
 
+/// Return a single activity level per labelled band.
 fn band_level(spectrum: &Spectrum, band: usize) -> f32 {
     if spectrum.mirrored {
         let i = band * 2;
@@ -760,6 +805,7 @@ fn band_level(spectrum: &Spectrum, band: usize) -> f32 {
     }
 }
 
+/// Return inbound/outbound levels for renderers that care about direction.
 fn band_signed_levels(spectrum: &Spectrum, band: usize) -> (f32, f32) {
     if spectrum.mirrored {
         (
@@ -771,6 +817,7 @@ fn band_signed_levels(spectrum: &Spectrum, band: usize) -> (f32, f32) {
     }
 }
 
+/// Pick the palette colour assigned to a band index.
 fn palette_tint(palette: VisualPalette, band: usize) -> [f32; 3] {
     const NEON: [[f32; 3]; 8] = [
         [0.05, 1.0, 0.95],
@@ -822,6 +869,7 @@ fn palette_tint(palette: VisualPalette, band: usize) -> [f32; 3] {
     colors[band % colors.len()]
 }
 
+/// Add a low-alpha overlay under particle renderers to visually soften trails.
 fn push_trail_overlay(out: &mut Vec<Inst>, plot: Plot) {
     push_flat_rect(
         out,
@@ -834,6 +882,7 @@ fn push_trail_overlay(out: &mut Vec<Inst>, plot: Plot) {
     );
 }
 
+/// Scale firework particle count with band intensity.
 fn firework_particle_count(intensity: f32) -> usize {
     if intensity <= 0.002 {
         return 0;
@@ -842,6 +891,7 @@ fn firework_particle_count(intensity: f32) -> usize {
     (10.0 + intensity.clamp(0.0, 1.0) * 46.0).round() as usize
 }
 
+/// Small deterministic hash used for stable pseudo-random visual placement.
 fn hash01(seed: u32) -> f32 {
     let mut x = seed.wrapping_mul(0x7feb_352d);
     x ^= x >> 15;
@@ -850,6 +900,7 @@ fn hash01(seed: u32) -> f32 {
     x as f32 / u32::MAX as f32
 }
 
+/// Combine palette tint, intensity, and per-particle sparkle into RGBA.
 fn firework_color(intensity: f32, seed: u32, tint: [f32; 3], alpha: f32) -> [f32; 4] {
     let sparkle = hash01(seed);
     let hot = intensity.clamp(0.0, 1.0);
@@ -861,6 +912,7 @@ fn firework_color(intensity: f32, seed: u32, tint: [f32; 3], alpha: f32) -> [f32
     ]
 }
 
+/// Rebuild glyphon buffers for per-band labels and rates.
 fn rebuild_labels(
     font_system: &mut FontSystem,
     label_bufs: &mut Vec<TextBuffer>,
@@ -1131,6 +1183,8 @@ fn build_instances(
     transparent_bars: bool,
 ) {
     out.clear();
+    // Classic renderer: each band becomes a ghost slot, optional lit bar, and
+    // optional peak cap.
     let ndc_x = |px: f32| px / w * 2.0 - 1.0;
     let ndc_y = |py: f32| 1.0 - py / h * 2.0;
 
@@ -1305,6 +1359,8 @@ fn build_firework_instances(
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
 
+    // Fireworks reuse a closure because non-mirrored and mirrored modes differ
+    // only in where the burst starts and which direction it travels.
     let emit_firework = |out: &mut Vec<Inst>,
                          band: usize,
                          cx: f32,
@@ -1451,6 +1507,8 @@ fn build_radar_instances(
     out.clear();
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
+    // Radar draws static range rings, a rotating sweep, and traffic blips placed
+    // around the circle by band index.
     let cx = w * 0.5;
     let cy = p.top + p.height * 0.52;
     let radius = (p.height.min(w - 2.0 * MARGIN_X)) * 0.43;
@@ -1547,6 +1605,8 @@ fn build_matrix_instances(
     out.clear();
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
+    // Matrix mode maps each band to a column of falling particles. Higher
+    // traffic increases density, size, and brightness.
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
@@ -1596,6 +1656,8 @@ fn build_oscilloscope_instances(
     out.clear();
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
+    // Oscilloscope mode samples a synthetic waveform within each band slot.
+    // Mirrored outbound traffic flips the wave direction.
     for band in 0..spectrum.band_count() {
         let (inbound, outbound) = band_signed_levels(spectrum, band);
         let level = inbound.max(outbound);
@@ -1656,6 +1718,7 @@ fn build_pulse_instances(
     out.clear();
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
+    // Pulse mode emits expanding rings from each active band's vertical level.
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
@@ -1702,6 +1765,8 @@ fn build_galaxy_instances(
     out.clear();
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
+    // Galaxy mode treats each band as an orbit system whose particle count and
+    // orbital radius grow with traffic intensity.
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {
@@ -1757,6 +1822,8 @@ fn build_lightning_instances(
     out.clear();
     let p = plot(w, h, spectrum.band_count());
     push_trail_overlay(out, p);
+    // Lightning mode builds a jagged bolt per active band, with occasional
+    // short branches to make stronger traffic look more explosive.
     for band in 0..spectrum.band_count() {
         let level = band_level(spectrum, band);
         if level <= 0.002 {

@@ -21,6 +21,8 @@ struct VsOut {
     @location(2) params: vec4<f32>,
 };
 
+// Expand each instance into two triangles. `rect` is already in NDC, so the
+// vertex shader only interpolates between rectangle corners and passes metadata.
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, vin: VsIn) -> VsOut {
     var corners = array<vec2<f32>, 6>(
@@ -38,6 +40,8 @@ fn vs_main(@builtin(vertex_index) vi: u32, vin: VsIn) -> VsOut {
     return out;
 }
 
+// Render either a particle sprite, a flat rectangle, or a segmented bar based
+// on params.y. The CPU keeps this branch simple by sharing one instance type.
 @fragment
 fn fs_main(vout: VsOut) -> @location(0) vec4<f32> {
     let value = vout.params.x;
@@ -45,6 +49,7 @@ fn fs_main(vout: VsOut) -> @location(0) vec4<f32> {
     let seg_flag = vout.params.z;
 
     if (draw_mode > 1.5) {
+        // Particle mode: radial falloff plus a bright core for bloom-like dots.
         let p = vout.uv * 2.0 - vec2<f32>(1.0, 1.0);
         let dist = length(p);
         let glow = smoothstep(1.0, 0.0, dist);
@@ -55,6 +60,8 @@ fn fs_main(vout: VsOut) -> @location(0) vec4<f32> {
     }
 
     if (draw_mode > 0.5) {
+        // Flat mode: used for peak caps, ghost slots, baseline ticks, and
+        // transparent trail overlays.
         return vout.color;
     }
 
