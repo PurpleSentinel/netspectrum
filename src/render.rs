@@ -173,12 +173,7 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
 
                 label_refresh -= dt;
                 if spectrum.labels_dirty || label_refresh <= 0.0 {
-                    rebuild_labels(
-                        &mut font_system,
-                        &mut label_bufs,
-                        &spectrum,
-                        &config,
-                    );
+                    rebuild_labels(&mut font_system, &mut label_bufs, &spectrum, &config);
                     spectrum.labels_dirty = false;
                     label_refresh = 0.25;
                 }
@@ -358,7 +353,13 @@ fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, seg
     let ghost = [1.0, 1.0, 1.0, 0.045];
     let peak_col = [1.0, 0.88, 0.35, 0.9];
 
-    let push = |out: &mut Vec<Inst>, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4], params: [f32; 4]| {
+    let push = |out: &mut Vec<Inst>,
+                x0: f32,
+                y0: f32,
+                x1: f32,
+                y1: f32,
+                color: [f32; 4],
+                params: [f32; 4]| {
         if out.len() < MAX_INSTANCES {
             out.push(Inst {
                 rect: [ndc_x(x0), ndc_y(y0), ndc_x(x1), ndc_y(y1)],
@@ -374,17 +375,41 @@ fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, seg
             let x1 = MARGIN_X + (i as f32 + 1.0) * slot_w - bar_pad;
 
             // Ghost slot (full scale, faint).
-            push(out, x0, plot_bottom, x1, plot_top, ghost, [1.0, 1.0, 0.0, 0.0]);
+            push(
+                out,
+                x0,
+                plot_bottom,
+                x1,
+                plot_top,
+                ghost,
+                [1.0, 1.0, 0.0, 0.0],
+            );
 
             let v = spectrum.disp[i];
             if v > 0.002 {
                 let tip = plot_bottom - v * plot_h;
-                push(out, x0, plot_bottom, x1, tip, white, [v, 0.0, seg_flag, 0.0]);
+                push(
+                    out,
+                    x0,
+                    plot_bottom,
+                    x1,
+                    tip,
+                    white,
+                    [v, 0.0, seg_flag, 0.0],
+                );
             }
             let p = spectrum.peak[i];
             if p > 0.004 {
                 let py = plot_bottom - p * plot_h;
-                push(out, x0, py + 1.5, x1, py - 1.5, peak_col, [p, 1.0, 0.0, 0.0]);
+                push(
+                    out,
+                    x0,
+                    py + 1.5,
+                    x1,
+                    py - 1.5,
+                    peak_col,
+                    [p, 1.0, 0.0, 0.0],
+                );
             }
         }
     } else {
@@ -395,9 +420,25 @@ fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, seg
             let x0 = MARGIN_X + g as f32 * slot_w + bar_pad;
             let x1 = MARGIN_X + (g as f32 + 1.0) * slot_w - bar_pad;
 
-            push(out, x0, plot_bottom, x1, plot_top, ghost, [1.0, 1.0, 0.0, 0.0]);
+            push(
+                out,
+                x0,
+                plot_bottom,
+                x1,
+                plot_top,
+                ghost,
+                [1.0, 1.0, 0.0, 0.0],
+            );
             // Centre line tick.
-            push(out, x0, mid + 1.0, x1, mid - 1.0, [1.0, 1.0, 1.0, 0.16], [0.0, 1.0, 0.0, 0.0]);
+            push(
+                out,
+                x0,
+                mid + 1.0,
+                x1,
+                mid - 1.0,
+                [1.0, 1.0, 1.0, 0.16],
+                [0.0, 1.0, 0.0, 0.0],
+            );
 
             let up = spectrum.disp[g * 2];
             if up > 0.002 {
@@ -407,7 +448,15 @@ fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, seg
             let pu = spectrum.peak[g * 2];
             if pu > 0.004 {
                 let py = mid - pu * half_h;
-                push(out, x0, py + 1.5, x1, py - 1.5, peak_col, [pu, 1.0, 0.0, 0.0]);
+                push(
+                    out,
+                    x0,
+                    py + 1.5,
+                    x1,
+                    py - 1.5,
+                    peak_col,
+                    [pu, 1.0, 0.0, 0.0],
+                );
             }
 
             let down = spectrum.disp[g * 2 + 1];
@@ -418,7 +467,15 @@ fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, seg
             let pd = spectrum.peak[g * 2 + 1];
             if pd > 0.004 {
                 let py = mid + pd * half_h;
-                push(out, x0, py - 1.5, x1, py + 1.5, peak_col, [pd, 1.0, 0.0, 0.0]);
+                push(
+                    out,
+                    x0,
+                    py - 1.5,
+                    x1,
+                    py + 1.5,
+                    peak_col,
+                    [pd, 1.0, 0.0, 0.0],
+                );
             }
         }
     }
