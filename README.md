@@ -10,6 +10,12 @@ This is a bit of fun, not a serious network monitoring or security tool. Treat
 it as a playful way to make traffic visible and audible, not as something to
 base operational decisions on.
 
+## Screenshot
+
+<p align="center">
+  <img src="docs/netspectrum-screenshot.png" alt="netspectrum running in protocol view" width="820">
+</p>
+
 ## Build
 
 Requires Rust (any recent toolchain; the committed `Cargo.lock` also keeps it
