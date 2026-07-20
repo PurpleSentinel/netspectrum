@@ -6,6 +6,10 @@ payloads — snaplen is 96 bytes, headers only) and renders it as a dancing,
 LED-segmented spectrum with real audio-analyser ballistics: fast attack, slow
 release, and peak-hold caps that hang and fall.
 
+This is a bit of fun, not a serious network monitoring or security tool. Treat
+it as a playful way to make traffic visible and audible, not as something to
+base operational decisions on.
+
 ## Build
 
 Requires Rust (any recent toolchain; the committed `Cargo.lock` also keeps it
@@ -49,8 +53,8 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | 4   | `hybrid`   | 8 protocol groups, mirrored around a centre line — inbound rises (cyan), outbound falls (orange) |
 | 5   | `sizes`    | Packet-size histogram: tiny ACKs on the left, full-MTU bulk transfer on the right |
 
-Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
-`Q`/`Esc` quits.
+Other keys: `S` toggles LED segmentation, `A` toggles audio feedback, `T`
+cycles tone palettes, `Q`/`Esc` quits.
 
 ## Reading it
 
@@ -63,6 +67,15 @@ Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
   with `pacat` fallback. Volume and routing stay under your desktop/system
   audio controls. In the mirrored hybrid view, inbound and outbound use separate
   tones so outbound traffic keeps its negative-flow character.
+* Tone palettes are deliberately playful:
+
+| Tone     | Character                                      |
+|----------|------------------------------------------------|
+| `sweep`  | Smooth analyzer-style pitch sweeps             |
+| `chime`  | Brighter glassy tones for lighter traffic      |
+| `pulse`  | Lower, heavier pulses for busy flows           |
+| `arcade` | Quantized blips with stepped pitch movement    |
+
 * Under each band: its name and a smoothed live rate. The header shows total
   in/out throughput.
 
@@ -80,6 +93,8 @@ Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
 ## Notes
 
 * Passive only: the pcap handle is opened for capture; nothing is ever sent.
+* This is intentionally decorative and approximate. It does not replace packet
+  analysis, flow accounting, alerting, observability, or security monitoring.
 * Promiscuous mode is requested; on a switched network you'll mostly see your
   own host's traffic plus broadcast/multicast unless you're on a mirror/SPAN port.
 * Direction detection uses the interface's own addresses; traffic not involving
