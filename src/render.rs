@@ -55,18 +55,23 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
         force_fallback_adapter: false,
     }))
     .expect("no compatible GPU adapter found");
+
+    let adapter_limits = adapter.limits();
+    let max_surface_extent = adapter_limits.max_texture_dimension_2d;
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: None,
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
+            required_limits: adapter_limits,
         },
         None,
     ))?;
 
     let size = window.inner_size();
+    let (surface_width, surface_height) =
+        surface_extent(size.width, size.height, max_surface_extent);
     let mut config = surface
-        .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+        .get_default_config(&adapter, surface_width, surface_height)
         .expect("surface unsupported by adapter");
     config.present_mode = wgpu::PresentMode::AutoVsync;
     surface.configure(&device, &config);
@@ -135,8 +140,8 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
             WindowEvent::CloseRequested => elwt.exit(),
             WindowEvent::Resized(new_size) => {
                 if new_size.width > 0 && new_size.height > 0 {
-                    config.width = new_size.width;
-                    config.height = new_size.height;
+                    (config.width, config.height) =
+                        surface_extent(new_size.width, new_size.height, max_surface_extent);
                     surface.configure(&device, &config);
                     spectrum.labels_dirty = true;
                 }
@@ -300,6 +305,11 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
     Ok(())
 }
 
+fn surface_extent(width: u32, height: u32, max_texture_dimension_2d: u32) -> (u32, u32) {
+    let max_extent = max_texture_dimension_2d.max(1);
+    (width.clamp(1, max_extent), height.clamp(1, max_extent))
+}
+
 fn rebuild_labels(
     font_system: &mut FontSystem,
     label_bufs: &mut Vec<TextBuffer>,
@@ -331,6 +341,22 @@ fn rebuild_labels(
         }
         buf.shape_until_scroll(font_system);
         label_bufs.push(buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::surface_extent;
+
+    #[test]
+    fn surface_extent_clamps_to_device_limit() {
+        assert_eq!(surface_extent(2060, 669, 2048), (2048, 669));
+    }
+
+    #[test]
+    fn surface_extent_never_returns_zero() {
+        assert_eq!(surface_extent(0, 0, 2048), (1, 1));
+        assert_eq!(surface_extent(10, 10, 0), (1, 1));
     }
 }
 
