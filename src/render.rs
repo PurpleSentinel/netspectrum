@@ -40,7 +40,7 @@ const DECORATION_REFRESH_FRAMES: u8 = 4;
 const DRAW_MODE_BAR: f32 = 0.0;
 const DRAW_MODE_FLAT: f32 = 1.0;
 const DRAW_MODE_PARTICLE: f32 = 2.0;
-const MAX_FIREWORK_PARTICLES_PER_BAND: usize = 24;
+const MAX_FIREWORK_PARTICLES_PER_BAND: usize = 56;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum VisualStyle {
@@ -444,7 +444,7 @@ fn firework_particle_count(intensity: f32) -> usize {
         return 0;
     }
 
-    (4.0 + intensity.clamp(0.0, 1.0) * 20.0).round() as usize
+    (10.0 + intensity.clamp(0.0, 1.0) * 46.0).round() as usize
 }
 
 fn hash01(seed: u32) -> f32 {
@@ -459,9 +459,9 @@ fn firework_color(intensity: f32, seed: u32, tint: [f32; 3], alpha: f32) -> [f32
     let sparkle = hash01(seed);
     let hot = intensity.clamp(0.0, 1.0);
     [
-        (tint[0] * (0.65 + 0.45 * hot) + sparkle * 0.18).min(1.0),
-        (tint[1] * (0.60 + 0.50 * hot) + sparkle * 0.16).min(1.0),
-        (tint[2] * (0.58 + 0.52 * hot) + sparkle * 0.14).min(1.0),
+        (tint[0] * (0.95 + 0.35 * hot) + sparkle * 0.25).min(1.0),
+        (tint[1] * (0.92 + 0.38 * hot) + sparkle * 0.23).min(1.0),
+        (tint[2] * (0.90 + 0.40 * hot) + sparkle * 0.22).min(1.0),
         alpha.clamp(0.0, 1.0),
     ]
 }
@@ -580,7 +580,9 @@ mod tests {
     #[test]
     fn firework_particle_count_scales_with_intensity() {
         assert_eq!(firework_particle_count(0.0), 0);
+        assert!(firework_particle_count(0.15) >= 16);
         assert!(firework_particle_count(0.9) > firework_particle_count(0.2));
+        assert!(firework_particle_count(1.0) >= 50);
     }
 
     #[test]
@@ -811,18 +813,18 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
             (slot_w * (0.22 + intensity * 1.05)).min(plot_h * 0.30) * (0.18 + phase * 1.25);
         let seed_base = (band as u32 + 1).wrapping_mul(7919);
 
-        let trail_count = (2.0 + intensity * 5.0).round() as usize;
+        let trail_count = (5.0 + intensity * 11.0).round() as usize;
         for trail in 0..trail_count {
             let k = (trail + 1) as f32 / (trail_count + 1) as f32;
             let wobble = (hash01(seed_base ^ trail as u32) - 0.5) * slot_w * 0.16;
             let y = base_y + (burst_y - base_y) * k;
-            let alpha = (0.05 + intensity * 0.16) * (1.0 - k * 0.55);
+            let alpha = (0.12 + intensity * 0.32) * (1.0 - k * 0.40);
             let color = firework_color(intensity, seed_base ^ trail as u32, tint, alpha);
-            push_particle(out, cx + wobble, y, 3.0 + intensity * 5.0, color, intensity);
+            push_particle(out, cx + wobble, y, 4.0 + intensity * 7.0, color, intensity);
         }
 
-        let core_alpha = (0.12 + intensity * 0.52) * fade;
-        let core_size = 8.0 + intensity * 28.0 * (1.0 - phase * 0.35);
+        let core_alpha = (0.28 + intensity * 0.72) * fade;
+        let core_size = 11.0 + intensity * 38.0 * (1.0 - phase * 0.25);
         push_particle(
             out,
             cx,
@@ -840,10 +842,24 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
             let gravity = phase * phase * radius * 0.42;
             let px = cx + angle.cos() * radius * scatter;
             let py = burst_y + angle.sin() * radius * scatter + gravity;
-            let size = 3.5 + intensity * 10.0 * (1.0 - phase * 0.25);
-            let alpha = fade * (0.18 + intensity * 0.70) * (0.72 + hash01(seed ^ 0x789a) * 0.36);
+            let size = 4.5 + intensity * 13.0 * (1.0 - phase * 0.18);
+            let alpha = fade * (0.32 + intensity * 0.88) * (0.82 + hash01(seed ^ 0x789a) * 0.34);
             let color = firework_color(intensity, seed, tint, alpha);
             push_particle(out, px, py, size, color, intensity);
+
+            if i % 2 == 0 {
+                let inner_px = cx + angle.cos() * radius * scatter * 0.45;
+                let inner_py = burst_y + angle.sin() * radius * scatter * 0.45 + gravity * 0.35;
+                let inner_alpha = alpha * (0.68 + intensity * 0.24);
+                push_particle(
+                    out,
+                    inner_px,
+                    inner_py,
+                    size * 0.72,
+                    firework_color(intensity, seed ^ 0xd00d, tint, inner_alpha),
+                    intensity,
+                );
+            }
         }
     };
 
@@ -854,10 +870,10 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
             let base_y = plot_bottom;
             let burst_y = plot_bottom - (0.16 + intensity * 0.74) * plot_h;
             let tint = match band % 4 {
-                0 => [0.25, 1.0, 0.62],
-                1 => [1.0, 0.82, 0.24],
-                2 => [1.0, 0.36, 0.28],
-                _ => [0.48, 0.78, 1.0],
+                0 => [0.05, 1.0, 0.95],
+                1 => [1.0, 0.92, 0.05],
+                2 => [1.0, 0.08, 0.45],
+                _ => [0.42, 0.18, 1.0],
             };
             emit_firework(out, band, cx, base_y, burst_y, intensity, tint);
         }
@@ -876,7 +892,7 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
                 mid,
                 mid - (0.10 + inbound * 0.82) * half_h,
                 inbound,
-                [0.42, 0.92, 1.0],
+                [0.02, 0.95, 1.0],
             );
             emit_firework(
                 out,
@@ -885,7 +901,7 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
                 mid,
                 mid + (0.10 + outbound * 0.82) * half_h,
                 outbound,
-                [1.0, 0.62, 0.32],
+                [1.0, 0.28, 0.02],
             );
         }
     }

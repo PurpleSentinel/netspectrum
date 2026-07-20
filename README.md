@@ -83,7 +83,8 @@ instead of restoring the frame; this is tracked in issue #16.
   an idle home link and a saturated 10G port look right without configuration.
 * The default `B` renderer is the classic bar view. The `F` renderer keeps the
   same bands but turns each band's traffic intensity into expanding firework
-  bursts with more particles, size, and glow as traffic gets louder.
+  bursts with dense bright particles, larger size, and stronger glow as traffic
+  gets louder.
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.
