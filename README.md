@@ -1,0 +1,79 @@
+# netspectrum
+
+A GPU-accelerated graphic equaliser for your network interface. Passively
+observes traffic on the wire (never transmits a single packet, never captures
+payloads — snaplen is 96 bytes, headers only) and renders it as a dancing,
+LED-segmented spectrum with real audio-analyser ballistics: fast attack, slow
+release, and peak-hold caps that hang and fall.
+
+## Build
+
+Requires Rust (any recent toolchain; the committed `Cargo.lock` also keeps it
+buildable on distro rustc 1.75) and libpcap headers:
+
+```
+sudo apt install libpcap-dev        # Debian/Ubuntu
+sudo dnf install libpcap-devel      # Fedora
+cargo build --release
+```
+
+The binary lands at `target/release/netspectrum`. Rendering uses wgpu, which
+picks Vulkan on Linux automatically (GL fallback if needed).
+
+## Run
+
+Capture needs raw-socket rights. Either:
+
+```
+sudo ./target/release/netspectrum -i eth0
+```
+
+or grant the capability once and run as yourself:
+
+```
+sudo setcap cap_net_raw,cap_net_admin+ep target/release/netspectrum
+./target/release/netspectrum -i eth0
+```
+
+With no `-i`, the default interface is used. `--list` shows interfaces.
+
+## Views
+
+Choose at launch with `-m`, or hot-switch live with the number keys:
+
+| Key | Mode       | Bands represent                                            |
+|-----|------------|------------------------------------------------------------|
+| 1   | `protocol` | 18 protocol bands: ARP, ICMP, DHCP, NTP, DNS, mDNS/SSDP, HTTP, TLS, QUIC, SSH, RDP/VNC, SMB/NFS, MAIL, DB, SYSLOG, other TCP/UDP/other |
+| 2   | `ports`    | 16 log2-spaced service-port bins — a true "frequency spectrum" of ports |
+| 3   | `hosts`    | Top remote hosts by traffic, dynamically ranked with hysteresis so bars don't reshuffle |
+| 4   | `hybrid`   | 8 protocol groups, mirrored around a centre line — inbound rises (cyan), outbound falls (orange) |
+| 5   | `sizes`    | Packet-size histogram: tiny ACKs on the left, full-MTU bulk transfer on the right |
+
+Other keys: `S` toggles LED segmentation, `Q`/`Esc` quits.
+
+## Reading it
+
+* Bar height is **log-scaled bytes/sec** with slow-decaying auto-gain, so both
+  an idle home link and a saturated 10G port look right without configuration.
+* The colour ramp (green → amber → red) tracks each band's fraction of the
+  current full-scale reference — red means "loud relative to recent history".
+* Gold caps are peak-hold markers: they hang ~1.1 s, then fall.
+* Under each band: its name and a smoothed live rate. The header shows total
+  in/out throughput.
+
+## Useful flags
+
+```
+-f, --filter <BPF>   e.g. -f 'not port 22' to hide the SSH session you're watching from
+    --hosts <N>      band count in hosts mode (4-24, default 12)
+-m, --mode <MODE>    initial view (protocol|ports|hosts|hybrid|sizes)
+    --list           list capture interfaces and exit
+```
+
+## Notes
+
+* Passive only: the pcap handle is opened for capture; nothing is ever sent.
+* Promiscuous mode is requested; on a switched network you'll mostly see your
+  own host's traffic plus broadcast/multicast unless you're on a mirror/SPAN port.
+* Direction detection uses the interface's own addresses; traffic not involving
+  a local address counts as inbound.

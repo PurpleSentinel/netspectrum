@@ -1,0 +1,21 @@
+[package]
+name = "netspectrum"
+version = "0.1.0"
+edition = "2021"
+description = "GPU-accelerated graphic-equaliser visualisation of passively observed network traffic"
+
+[dependencies]
+pcap = "1.1"
+etherparse = "0.13"
+winit = "0.29"
+wgpu = "0.19"
+glyphon = "0.5"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+clap = { version = "=4.4.18", features = ["derive"] }
+crossbeam-channel = "0.5"
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+opt-level = 3
