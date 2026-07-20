@@ -18,6 +18,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+use crate::audio::AudioControl;
 use crate::bands::{human_rate, Mode, Spectrum};
 use crate::capture::PacketMeta;
 
@@ -131,6 +132,7 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
 
     // ------------------------------------------------------------- state
     let mut segments = true;
+    let mut audio = AudioControl::new();
     let mut last = Instant::now();
     let mut label_refresh = 0.0f32;
     let mut instances: Vec<Inst> = Vec::with_capacity(MAX_INSTANCES);
@@ -162,6 +164,9 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
                     KeyCode::Digit4 => spectrum.set_mode(Mode::Hybrid),
                     KeyCode::Digit5 => spectrum.set_mode(Mode::Sizes),
                     KeyCode::KeyS => segments = !segments,
+                    KeyCode::KeyA => {
+                        audio.toggle();
+                    }
                     KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
                     _ => {}
                 };
@@ -175,6 +180,7 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
                     spectrum.ingest(&m);
                 }
                 spectrum.tick(dt);
+                audio.update(&spectrum);
 
                 label_refresh -= dt;
                 if spectrum.labels_dirty || label_refresh <= 0.0 {
@@ -189,12 +195,18 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
                 queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances));
 
                 // Header text.
+                let audio_label = match audio.snapshot() {
+                    snapshot if snapshot.enabled => "audio on",
+                    snapshot if snapshot.available => "audio off",
+                    _ => "audio n/a",
+                };
                 let header = format!(
-                    "NETSPECTRUM   {}   [{}]   in {}   out {}      1-5 modes   S segments   Q quit",
+                    "NETSPECTRUM   {}   [{}]   in {}   out {}      1-5 modes   S segments   A {}   Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
                     human_rate(spectrum.rate_out),
+                    audio_label,
                 );
                 header_buf.set_size(&mut font_system, w, 40.0);
                 header_buf.set_text(

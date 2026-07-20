@@ -1,3 +1,4 @@
+mod audio;
 mod bands;
 mod capture;
 mod render;

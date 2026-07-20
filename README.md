@@ -49,7 +49,8 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | 4   | `hybrid`   | 8 protocol groups, mirrored around a centre line — inbound rises (cyan), outbound falls (orange) |
 | 5   | `sizes`    | Packet-size histogram: tiny ACKs on the left, full-MTU bulk transfer on the right |
 
-Other keys: `S` toggles LED segmentation, `Q`/`Esc` quits.
+Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
+`Q`/`Esc` quits.
 
 ## Reading it
 
@@ -58,6 +59,10 @@ Other keys: `S` toggles LED segmentation, `Q`/`Esc` quits.
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.
+* Optional audio follows the current system default output through `pw-cat`.
+  Volume and routing stay under your desktop/system audio controls. In the
+  mirrored hybrid view, inbound and outbound use separate tones so outbound
+  traffic keeps its negative-flow character.
 * Under each band: its name and a smoothed live rate. The header shows total
   in/out throughput.
 
