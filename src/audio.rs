@@ -21,6 +21,35 @@ pub struct AudioConfig {
     pub output: Option<String>,
 }
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TonePalette {
+    #[default]
+    Sweep,
+    Chime,
+    Pulse,
+    Arcade,
+}
+
+impl TonePalette {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Sweep => "sweep",
+            Self::Chime => "chime",
+            Self::Pulse => "pulse",
+            Self::Arcade => "arcade",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Sweep => Self::Chime,
+            Self::Chime => Self::Pulse,
+            Self::Pulse => Self::Arcade,
+            Self::Arcade => Self::Sweep,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default)]
 struct AudioTarget {
     enabled: bool,
@@ -28,6 +57,7 @@ struct AudioTarget {
     inbound_level: f32,
     outbound_level: f32,
     centroid: f32,
+    palette: TonePalette,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -63,6 +93,7 @@ impl Default for AudioEngineState {
 pub struct AudioSnapshot {
     pub enabled: bool,
     pub available: bool,
+    pub palette: TonePalette,
 }
 
 pub struct AudioState {
@@ -74,11 +105,13 @@ pub struct AudioState {
 }
 
 impl AudioState {
-    pub fn new(config: &AudioConfig) -> Result<Self> {
+    pub fn new(config: &AudioConfig, palette: TonePalette) -> Result<Self> {
         let helper = spawn_audio_helper(config).context("starting audio playback helper")?;
         let child = helper.child;
 
-        let shared = Arc::new(Mutex::new(AudioEngineState::default()));
+        let mut initial_state = AudioEngineState::default();
+        initial_state.target.palette = palette;
+        let shared = Arc::new(Mutex::new(initial_state));
         let running = Arc::new(AtomicBool::new(true));
         let healthy = Arc::new(AtomicBool::new(true));
         let worker = {
@@ -101,13 +134,30 @@ impl AudioState {
     }
 
     pub fn update(&mut self, spectrum: &Spectrum) {
-        self.set_target(target_from_spectrum(spectrum, true));
+        let palette = self
+            .shared
+            .lock()
+            .map(|state| state.target.palette)
+            .unwrap_or_default();
+        self.set_target(target_from_spectrum(spectrum, true, palette));
     }
 
     pub fn snapshot(&self) -> AudioSnapshot {
+        let palette = self
+            .shared
+            .lock()
+            .map(|state| state.target.palette)
+            .unwrap_or_default();
         AudioSnapshot {
             enabled: self.healthy.load(Ordering::Relaxed),
             available: self.healthy.load(Ordering::Relaxed),
+            palette,
+        }
+    }
+
+    pub fn set_palette(&self, palette: TonePalette) {
+        if let Ok(mut state) = self.shared.lock() {
+            state.target.palette = palette;
         }
     }
 
@@ -131,6 +181,7 @@ impl Drop for AudioState {
 pub struct AudioControl {
     config: AudioConfig,
     state: AudioMode,
+    palette: TonePalette,
 }
 
 enum AudioMode {
@@ -144,21 +195,32 @@ impl AudioControl {
         Self {
             config,
             state: AudioMode::Off,
+            palette: TonePalette::default(),
         }
     }
 
     pub fn toggle(&mut self) -> AudioSnapshot {
         self.state = match std::mem::replace(&mut self.state, AudioMode::Off) {
-            AudioMode::Off | AudioMode::Unavailable => match AudioState::new(&self.config) {
-                Ok(audio) => AudioMode::On(audio),
-                Err(e) => {
-                    eprintln!("audio unavailable: {e}");
-                    AudioMode::Unavailable
+            AudioMode::Off | AudioMode::Unavailable => {
+                match AudioState::new(&self.config, self.palette) {
+                    Ok(audio) => AudioMode::On(audio),
+                    Err(e) => {
+                        eprintln!("audio unavailable: {e}");
+                        AudioMode::Unavailable
+                    }
                 }
-            },
+            }
             AudioMode::On(_) => AudioMode::Off,
         };
         self.snapshot()
+    }
+
+    pub fn cycle_palette(&mut self) -> TonePalette {
+        self.palette = self.palette.next();
+        if let AudioMode::On(audio) = &self.state {
+            audio.set_palette(self.palette);
+        }
+        self.palette
     }
 
     pub fn update(&mut self, spectrum: &Spectrum) {
@@ -175,11 +237,13 @@ impl AudioControl {
             AudioMode::Off => AudioSnapshot {
                 enabled: false,
                 available: true,
+                palette: self.palette,
             },
             AudioMode::On(audio) => audio.snapshot(),
             AudioMode::Unavailable => AudioSnapshot {
                 enabled: false,
                 available: false,
+                palette: self.palette,
             },
         }
     }
@@ -402,23 +466,7 @@ fn fill_audio_block(block: &mut [u8], state: &mut AudioEngineState) {
         state.outbound_level += (target.outbound_level - state.outbound_level) * 0.0025;
         state.centroid += (target.centroid - state.centroid) * 0.0015;
 
-        let mono = soft_tone(
-            &mut state.mono_phase,
-            130.0 + state.centroid * 520.0 + state.mono_level * 120.0,
-        ) * state.mono_level
-            * 0.11;
-
-        let inbound = soft_tone(
-            &mut state.inbound_phase,
-            330.0 + state.inbound_level * 420.0,
-        ) * state.inbound_level
-            * 0.09;
-
-        let outbound = soft_tone(
-            &mut state.outbound_phase,
-            82.0 + state.outbound_level * 180.0,
-        ) * state.outbound_level
-            * 0.12;
+        let (mono, inbound, outbound) = palette_sample(state, target.palette);
 
         let left = (mono + inbound * 0.25 - outbound).clamp(-0.25, 0.25) * state.amp;
         let right = (mono + inbound - outbound * 0.25).clamp(-0.25, 0.25) * state.amp;
@@ -426,7 +474,7 @@ fn fill_audio_block(block: &mut [u8], state: &mut AudioEngineState) {
     }
 }
 
-fn target_from_spectrum(spectrum: &Spectrum, enabled: bool) -> AudioTarget {
+fn target_from_spectrum(spectrum: &Spectrum, enabled: bool, palette: TonePalette) -> AudioTarget {
     if spectrum.mirrored {
         let mut inbound = 0.0f32;
         let mut outbound = 0.0f32;
@@ -441,6 +489,7 @@ fn target_from_spectrum(spectrum: &Spectrum, enabled: bool) -> AudioTarget {
             inbound_level: inbound,
             outbound_level: outbound,
             centroid: 0.5,
+            palette,
         }
     } else {
         let mut peak = 0.0f32;
@@ -459,13 +508,98 @@ fn target_from_spectrum(spectrum: &Spectrum, enabled: bool) -> AudioTarget {
             inbound_level: 0.0,
             outbound_level: 0.0,
             centroid: if total > 0.001 { weighted / total } else { 0.5 },
+            palette,
         }
     }
 }
 
-fn soft_tone(phase: &mut f32, hz: f32) -> f32 {
+fn palette_sample(state: &mut AudioEngineState, palette: TonePalette) -> (f32, f32, f32) {
+    match palette {
+        TonePalette::Sweep => {
+            let mono = shaped_tone(
+                &mut state.mono_phase,
+                130.0 + state.centroid * 520.0 + state.mono_level * 120.0,
+                1.0,
+            ) * state.mono_level
+                * 0.11;
+            let inbound = shaped_tone(
+                &mut state.inbound_phase,
+                330.0 + state.inbound_level * 420.0,
+                1.0,
+            ) * state.inbound_level
+                * 0.09;
+            let outbound = shaped_tone(
+                &mut state.outbound_phase,
+                82.0 + state.outbound_level * 180.0,
+                1.0,
+            ) * state.outbound_level
+                * 0.12;
+            (mono, inbound, outbound)
+        }
+        TonePalette::Chime => {
+            let mono = shaped_tone(&mut state.mono_phase, 420.0 + state.centroid * 880.0, 0.65)
+                * state.mono_level.sqrt()
+                * 0.07;
+            let inbound = shaped_tone(
+                &mut state.inbound_phase,
+                760.0 + state.inbound_level * 640.0,
+                0.7,
+            ) * state.inbound_level
+                * 0.07;
+            let outbound = shaped_tone(
+                &mut state.outbound_phase,
+                180.0 + state.outbound_level * 260.0,
+                0.8,
+            ) * state.outbound_level
+                * 0.10;
+            (mono, inbound, outbound)
+        }
+        TonePalette::Pulse => {
+            let mono_level = state.mono_level * state.mono_level;
+            let inbound_level = state.inbound_level * state.inbound_level;
+            let outbound_level = state.outbound_level * state.outbound_level;
+            let mono = shaped_tone(
+                &mut state.mono_phase,
+                74.0 + state.centroid * 180.0 + mono_level * 90.0,
+                1.8,
+            ) * mono_level
+                * 0.16;
+            let inbound = shaped_tone(&mut state.inbound_phase, 190.0 + inbound_level * 220.0, 1.5)
+                * inbound_level
+                * 0.10;
+            let outbound = shaped_tone(
+                &mut state.outbound_phase,
+                55.0 + outbound_level * 100.0,
+                1.8,
+            ) * outbound_level
+                * 0.15;
+            (mono, inbound, outbound)
+        }
+        TonePalette::Arcade => {
+            let scale = [0.0, 2.0, 3.0, 7.0, 10.0, 12.0, 15.0, 19.0];
+            let note = (state.centroid * (scale.len() - 1) as f32).round() as usize;
+            let base = 110.0 * 2f32.powf(scale[note] / 12.0);
+            let mono = shaped_tone(&mut state.mono_phase, base, 3.0) * state.mono_level * 0.10;
+            let inbound = shaped_tone(
+                &mut state.inbound_phase,
+                220.0 * 2f32.powf((state.inbound_level * 12.0).round() / 12.0),
+                2.4,
+            ) * state.inbound_level
+                * 0.09;
+            let outbound = shaped_tone(
+                &mut state.outbound_phase,
+                73.42 * 2f32.powf((state.outbound_level * 7.0).round() / 12.0),
+                2.8,
+            ) * state.outbound_level
+                * 0.13;
+            (mono, inbound, outbound)
+        }
+    }
+}
+
+fn shaped_tone(phase: &mut f32, hz: f32, drive: f32) -> f32 {
     *phase = (*phase + hz / SAMPLE_RATE).fract();
-    (*phase * TAU).sin().tanh()
+    ((*phase * TAU).sin() * drive).tanh()
 }
 
 fn write_f32_pair(frame: &mut [u8], left: f32, right: f32) {
@@ -482,8 +616,8 @@ mod tests {
     use crate::bands::{Mode, Spectrum};
 
     use super::{
-        audio_attempts, fill_audio_block, target_from_spectrum, write_f32_pair, AudioEngineState,
-        CHANNELS,
+        audio_attempts, fill_audio_block, target_from_spectrum, write_f32_pair, AudioControl,
+        AudioEngineState, CHANNELS,
     };
 
     #[test]
@@ -492,7 +626,7 @@ mod tests {
         spectrum.disp[2] = 0.25;
         spectrum.disp[9] = 0.75;
 
-        let target = target_from_spectrum(&spectrum, true);
+        let target = target_from_spectrum(&spectrum, true, super::TonePalette::Sweep);
 
         assert!(target.enabled);
         assert_eq!(target.mono_level, 0.75);
@@ -509,7 +643,7 @@ mod tests {
         spectrum.disp[2] = 0.6;
         spectrum.disp[3] = 0.3;
 
-        let target = target_from_spectrum(&spectrum, true);
+        let target = target_from_spectrum(&spectrum, true, super::TonePalette::Sweep);
 
         assert_eq!(target.mono_level, 0.8);
         assert_eq!(target.inbound_level, 0.6);
@@ -525,6 +659,7 @@ mod tests {
             inbound_level: 1.0,
             outbound_level: 1.0,
             centroid: 1.0,
+            palette: super::TonePalette::Sweep,
         };
         let mut block = vec![0u8; 64 * CHANNELS * std::mem::size_of::<f32>()];
 
@@ -533,6 +668,34 @@ mod tests {
         for sample in block.chunks_exact(4) {
             let value = f32::from_ne_bytes(sample.try_into().unwrap());
             assert!((-0.25..=0.25).contains(&value));
+        }
+    }
+
+    #[test]
+    fn every_palette_generates_bounded_audio() {
+        for palette in [
+            super::TonePalette::Sweep,
+            super::TonePalette::Chime,
+            super::TonePalette::Pulse,
+            super::TonePalette::Arcade,
+        ] {
+            let mut state = AudioEngineState::default();
+            state.target = super::AudioTarget {
+                enabled: true,
+                mono_level: 0.8,
+                inbound_level: 0.6,
+                outbound_level: 0.9,
+                centroid: 0.4,
+                palette,
+            };
+            let mut block = vec![0u8; 64 * CHANNELS * std::mem::size_of::<f32>()];
+
+            fill_audio_block(&mut block, &mut state);
+
+            for sample in block.chunks_exact(4) {
+                let value = f32::from_ne_bytes(sample.try_into().unwrap());
+                assert!((-0.25..=0.25).contains(&value), "{palette:?}: {value}");
+            }
         }
     }
 
@@ -560,5 +723,16 @@ mod tests {
             .args
             .windows(2)
             .any(|w| w == ["--device", "alsa_output.pci-0000_02_00.1.hdmi-stereo"]));
+    }
+
+    #[test]
+    fn audio_control_cycles_tone_palettes_while_off() {
+        let mut control = AudioControl::new(super::AudioConfig::default());
+
+        assert_eq!(control.snapshot().palette, super::TonePalette::Sweep);
+        assert_eq!(control.cycle_palette(), super::TonePalette::Chime);
+        assert_eq!(control.cycle_palette(), super::TonePalette::Pulse);
+        assert_eq!(control.cycle_palette(), super::TonePalette::Arcade);
+        assert_eq!(control.cycle_palette(), super::TonePalette::Sweep);
     }
 }

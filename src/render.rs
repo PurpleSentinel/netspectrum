@@ -172,6 +172,9 @@ pub fn run(
                     KeyCode::KeyA => {
                         audio.toggle();
                     }
+                    KeyCode::KeyT => {
+                        audio.cycle_palette();
+                    }
                     KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
                     _ => {}
                 };
@@ -200,18 +203,23 @@ pub fn run(
                 queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances));
 
                 // Header text.
-                let audio_label = match audio.snapshot() {
-                    snapshot if snapshot.enabled => "audio on",
-                    snapshot if snapshot.available => "audio off",
-                    _ => "audio n/a",
+                let audio_snapshot = audio.snapshot();
+                let audio_label = if audio_snapshot.enabled {
+                    "audio on"
+                } else if audio_snapshot.available {
+                    "audio off"
+                } else {
+                    "audio n/a"
                 };
+                let tone_label = audio_snapshot.palette.name();
                 let header = format!(
-                    "NETSPECTRUM   {}   [{}]   in {}   out {}      1-5 modes   S segments   A {}   Q quit",
+                    "NETSPECTRUM   {}   [{}]   in {}   out {}      1-5 modes   S segments   A {}   T tone {}   Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
                     human_rate(spectrum.rate_out),
                     audio_label,
+                    tone_label,
                 );
                 header_buf.set_size(&mut font_system, w, 40.0);
                 header_buf.set_text(
