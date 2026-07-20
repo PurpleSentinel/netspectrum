@@ -59,10 +59,21 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | 4   | `hybrid`   | 8 protocol groups, mirrored around a centre line — inbound rises (cyan), outbound falls (orange) |
 | 5   | `sizes`    | Packet-size histogram: tiny ACKs on the left, full-MTU bulk transfer on the right |
 
-Other keys: `S` toggles LED segmentation, `A` toggles audio feedback, `T`
-cycles tone palettes, `W` toggles the window frame and controls, `Z` toggles
-the dark-blue background transparency, `X` toggles the grey bar backing
-transparency, `Q`/`Esc` quits.
+## Controls
+
+| Key       | Action                                                  |
+|-----------|---------------------------------------------------------|
+| `1`-`5`   | Switch between the live views listed above              |
+| `S`       | Toggle LED segmentation on the bars                     |
+| `A`       | Toggle optional audio feedback                          |
+| `T`       | Cycle through the tone palettes                         |
+| `W`       | Toggle the window frame and titlebar controls           |
+| `Z`       | Toggle the dark-blue background transparency            |
+| `X`       | Toggle the grey bar backing transparency                |
+| `Q`/`Esc` | Quit                                                    |
+
+Known issue: on some Linux desktops the second `W` press can hide the equaliser
+instead of restoring the frame; this is tracked in issue #16.
 
 ## Reading it
 
