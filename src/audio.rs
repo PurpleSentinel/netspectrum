@@ -62,47 +62,33 @@ pub struct AudioSnapshot {
 pub struct AudioState {
     shared: Arc<Mutex<AudioEngineState>>,
     running: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     child: Child,
 }
 
 impl AudioState {
     pub fn new() -> Result<Self> {
-        let mut child = Command::new("pw-cat")
-            .args([
-                "--raw",
-                "--playback",
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-                "--format",
-                "f32",
-                "--media-role",
-                "Production",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("starting pw-cat audio playback")?;
+        let mut child = spawn_audio_helper().context("starting audio playback helper")?;
 
-        let stdin = child.stdin.take().context("opening pw-cat stdin")?;
+        let stdin = child.stdin.take().context("opening audio helper stdin")?;
         let shared = Arc::new(Mutex::new(AudioEngineState::default()));
         let running = Arc::new(AtomicBool::new(true));
+        let healthy = Arc::new(AtomicBool::new(true));
         let worker = {
             let shared = shared.clone();
             let running = running.clone();
+            let healthy = healthy.clone();
             std::thread::Builder::new()
                 .name("audio".into())
-                .spawn(move || audio_worker(stdin, shared, running))
+                .spawn(move || audio_worker(stdin, shared, running, healthy))
                 .context("spawning audio worker")?
         };
 
         Ok(Self {
             shared,
             running,
+            healthy,
             worker: Some(worker),
             child,
         })
@@ -114,8 +100,8 @@ impl AudioState {
 
     pub fn snapshot(&self) -> AudioSnapshot {
         AudioSnapshot {
-            enabled: true,
-            available: true,
+            enabled: self.healthy.load(Ordering::Relaxed),
+            available: self.healthy.load(Ordering::Relaxed),
         }
     }
 
@@ -164,6 +150,9 @@ impl AudioControl {
     pub fn update(&mut self, spectrum: &Spectrum) {
         if let Self::On(audio) = self {
             audio.update(spectrum);
+            if !audio.snapshot().available {
+                *self = Self::Unavailable;
+            }
         }
     }
 
@@ -186,6 +175,7 @@ fn audio_worker(
     mut output: impl Write,
     shared: Arc<Mutex<AudioEngineState>>,
     running: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
 ) {
     let mut block = vec![0u8; FRAMES_PER_BLOCK * CHANNELS * std::mem::size_of::<f32>()];
 
@@ -193,6 +183,7 @@ fn audio_worker(
         let Ok(mut state) = shared.lock() else {
             fill_silence(&mut block);
             if output.write_all(&block).is_err() {
+                healthy.store(false, Ordering::Relaxed);
                 return;
             }
             continue;
@@ -202,9 +193,64 @@ fn audio_worker(
         drop(state);
 
         if output.write_all(&block).is_err() {
+            healthy.store(false, Ordering::Relaxed);
             return;
         }
     }
+}
+
+fn spawn_audio_helper() -> Result<Child> {
+    let attempts = [
+        (
+            "pw-cat",
+            &[
+                "--raw",
+                "--playback",
+                "--rate",
+                "48000",
+                "--channels",
+                "2",
+                "--format",
+                "f32",
+                "--latency",
+                "20ms",
+                "-",
+            ][..],
+        ),
+        (
+            "pacat",
+            &[
+                "--raw",
+                "--playback",
+                "--rate",
+                "48000",
+                "--channels",
+                "2",
+                "--format",
+                "float32le",
+                "--client-name",
+                "netspectrum",
+                "--stream-name",
+                "netspectrum audio",
+            ][..],
+        ),
+    ];
+
+    let mut errors = Vec::new();
+    for (program, args) in attempts {
+        match Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(e) => errors.push(format!("{program}: {e}")),
+        }
+    }
+
+    anyhow::bail!("no supported audio helper found ({})", errors.join("; "))
 }
 
 fn fill_audio_block(block: &mut [u8], state: &mut AudioEngineState) {
@@ -296,7 +342,9 @@ fn fill_silence(block: &mut [u8]) {
 mod tests {
     use crate::bands::{Mode, Spectrum};
 
-    use super::{fill_audio_block, target_from_spectrum, AudioEngineState, CHANNELS};
+    use super::{
+        fill_audio_block, target_from_spectrum, write_f32_pair, AudioEngineState, CHANNELS,
+    };
 
     #[test]
     fn non_mirrored_audio_uses_peak_level() {
@@ -346,5 +394,15 @@ mod tests {
             let value = f32::from_ne_bytes(sample.try_into().unwrap());
             assert!((-0.25..=0.25).contains(&value));
         }
+    }
+
+    #[test]
+    fn writes_native_f32_stereo_frames() {
+        let mut frame = [0u8; 8];
+
+        write_f32_pair(&mut frame, 0.5, -0.25);
+
+        assert_eq!(f32::from_ne_bytes(frame[..4].try_into().unwrap()), 0.5);
+        assert_eq!(f32::from_ne_bytes(frame[4..].try_into().unwrap()), -0.25);
     }
 }
