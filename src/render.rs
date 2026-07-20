@@ -49,6 +49,7 @@ pub fn run(
         WindowBuilder::new()
             .with_title("netspectrum")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
+            .with_transparent(true)
             .build(&event_loop)?,
     );
 
@@ -80,6 +81,7 @@ pub fn run(
         .get_default_config(&adapter, surface_width, surface_height)
         .expect("surface unsupported by adapter");
     config.present_mode = wgpu::PresentMode::AutoVsync;
+    config.alpha_mode = preferred_alpha_mode(&surface.get_capabilities(&adapter).alpha_modes);
     surface.configure(&device, &config);
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -137,6 +139,8 @@ pub fn run(
 
     // ------------------------------------------------------------- state
     let mut segments = true;
+    let mut transparent_background = false;
+    let mut transparent_bars = false;
     let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
     let mut label_refresh = 0.0f32;
@@ -169,6 +173,8 @@ pub fn run(
                     KeyCode::Digit4 => spectrum.set_mode(Mode::Hybrid),
                     KeyCode::Digit5 => spectrum.set_mode(Mode::Sizes),
                     KeyCode::KeyS => segments = !segments,
+                    KeyCode::KeyZ => transparent_background = !transparent_background,
+                    KeyCode::KeyX => transparent_bars = !transparent_bars,
                     KeyCode::KeyA => {
                         audio.toggle();
                     }
@@ -199,7 +205,7 @@ pub fn run(
 
                 let w = config.width as f32;
                 let h = config.height as f32;
-                build_instances(&mut instances, &spectrum, w, h, segments);
+                build_instances(&mut instances, &spectrum, w, h, segments, transparent_bars);
                 queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances));
 
                 // Header text.
@@ -212,14 +218,18 @@ pub fn run(
                     "audio n/a"
                 };
                 let tone_label = audio_snapshot.palette.name();
+                let background_label = if transparent_background { "bg clr" } else { "bg on" };
+                let bars_label = if transparent_bars { "bar clr" } else { "bar gry" };
                 let header = format!(
-                    "NETSPECTRUM   {}   [{}]   in {}   out {}      1-5 modes   S segments   A {}   T tone {}   Q quit",
+                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  S seg  A {}  T {}  Z {}  X {}  Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
                     human_rate(spectrum.rate_out),
                     audio_label,
                     tone_label,
+                    background_label,
+                    bars_label,
                 );
                 header_buf.set_size(&mut font_system, w, 40.0);
                 header_buf.set_text(
@@ -300,12 +310,9 @@ pub fn run(
                             view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.015,
-                                    g: 0.022,
-                                    b: 0.038,
-                                    a: 1.0,
-                                }),
+                                load: wgpu::LoadOp::Clear(background_color(
+                                    transparent_background,
+                                )),
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
@@ -333,6 +340,37 @@ pub fn run(
 fn surface_extent(width: u32, height: u32, max_texture_dimension_2d: u32) -> (u32, u32) {
     let max_extent = max_texture_dimension_2d.max(1);
     (width.clamp(1, max_extent), height.clamp(1, max_extent))
+}
+
+fn preferred_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlphaMode {
+    [
+        wgpu::CompositeAlphaMode::PreMultiplied,
+        wgpu::CompositeAlphaMode::PostMultiplied,
+        wgpu::CompositeAlphaMode::Inherit,
+        wgpu::CompositeAlphaMode::Auto,
+        wgpu::CompositeAlphaMode::Opaque,
+    ]
+    .into_iter()
+    .find(|mode| modes.contains(mode))
+    .unwrap_or(wgpu::CompositeAlphaMode::Opaque)
+}
+
+fn background_color(transparent: bool) -> wgpu::Color {
+    if transparent {
+        return wgpu::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+    }
+
+    wgpu::Color {
+        r: 0.015,
+        g: 0.022,
+        b: 0.038,
+        a: 1.0,
+    }
 }
 
 fn rebuild_labels(
@@ -371,7 +409,8 @@ fn rebuild_labels(
 
 #[cfg(test)]
 mod tests {
-    use super::surface_extent;
+    use super::{background_color, build_instances, preferred_alpha_mode, surface_extent};
+    use crate::bands::{Mode, Spectrum};
 
     #[test]
     fn surface_extent_clamps_to_device_limit() {
@@ -383,9 +422,50 @@ mod tests {
         assert_eq!(surface_extent(0, 0, 2048), (1, 1));
         assert_eq!(surface_extent(10, 10, 0), (1, 1));
     }
+
+    #[test]
+    fn background_color_alpha_can_be_toggled() {
+        assert_eq!(background_color(false).a, 1.0);
+        assert_eq!(background_color(true).a, 0.0);
+    }
+
+    #[test]
+    fn preferred_alpha_mode_allows_transparency_when_supported() {
+        assert_eq!(
+            preferred_alpha_mode(&[
+                wgpu::CompositeAlphaMode::Opaque,
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+            ]),
+            wgpu::CompositeAlphaMode::PreMultiplied
+        );
+        assert_eq!(
+            preferred_alpha_mode(&[wgpu::CompositeAlphaMode::Opaque]),
+            wgpu::CompositeAlphaMode::Opaque
+        );
+    }
+
+    #[test]
+    fn ghost_bar_alpha_can_be_toggled() {
+        let spectrum = Spectrum::new(Mode::Protocol, 12);
+        let mut instances = Vec::new();
+
+        build_instances(&mut instances, &spectrum, 1280.0, 720.0, true, false);
+        assert!(instances.iter().any(|inst| inst.color[3] > 0.0));
+
+        build_instances(&mut instances, &spectrum, 1280.0, 720.0, true, true);
+        assert!(instances.iter().all(|inst| inst.color[3] == 0.0));
+    }
 }
 
-fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, segments: bool) {
+fn build_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    segments: bool,
+    transparent_bars: bool,
+) {
     out.clear();
     let ndc_x = |px: f32| px / w * 2.0 - 1.0;
     let ndc_y = |py: f32| 1.0 - py / h * 2.0;
@@ -401,7 +481,8 @@ fn build_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, seg
     let white = [1.0, 1.0, 1.0, 0.95];
     let tint_in = [0.62, 0.92, 1.0, 0.95];
     let tint_out = [1.0, 0.72, 0.5, 0.95];
-    let ghost = [1.0, 1.0, 1.0, 0.045];
+    let ghost_alpha = if transparent_bars { 0.0 } else { 0.045 };
+    let ghost = [1.0, 1.0, 1.0, ghost_alpha];
     let peak_col = [1.0, 0.88, 0.35, 0.9];
 
     let push = |out: &mut Vec<Inst>,
