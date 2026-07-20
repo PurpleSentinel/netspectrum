@@ -66,6 +66,12 @@ Choose at launch with `-m`, or hot-switch live with the number keys:
 | `1`-`5`   | Switch between the live views listed above              |
 | `B`       | Use the classic bar renderer                            |
 | `F`       | Use the fireworks renderer                              |
+| `R`       | Use the radar / sonar renderer                          |
+| `M`       | Use the matrix-rain renderer                            |
+| `O`       | Use the oscilloscope renderer                           |
+| `P`       | Use the pulse-ring renderer                             |
+| `G`       | Use the galaxy / orbit renderer                         |
+| `L`       | Use the lightning renderer                              |
 | `S`       | Toggle LED segmentation on the bars                     |
 | `A`       | Toggle optional audio feedback                          |
 | `T`       | Cycle through the tone palettes                         |
@@ -85,6 +91,10 @@ instead of restoring the frame; this is tracked in issue #16.
   same bands but turns each band's traffic intensity into expanding firework
   bursts with dense bright particles, larger size, and stronger glow as traffic
   gets louder.
+* Extra visual renderers are available with `R` radar, `M` matrix rain, `O`
+  oscilloscope, `P` pulse rings, `G` galaxy, and `L` lightning. They use the
+  same band data as the bars, so the view changes but the underlying traffic
+  grouping stays the same.
 * The colour ramp (green → amber → red) tracks each band's fraction of the
   current full-scale reference — red means "loud relative to recent history".
 * Gold caps are peak-hold markers: they hang ~1.1 s, then fall.

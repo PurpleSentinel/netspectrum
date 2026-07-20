@@ -46,6 +46,30 @@ const MAX_FIREWORK_PARTICLES_PER_BAND: usize = 56;
 enum VisualStyle {
     Bars,
     Fireworks,
+    Radar,
+    Matrix,
+    Oscilloscope,
+    Pulse,
+    Galaxy,
+    Lightning,
+}
+
+#[derive(Copy, Clone)]
+struct Plot {
+    w: f32,
+    h: f32,
+    top: f32,
+    bottom: f32,
+    height: f32,
+    slot_w: f32,
+}
+
+#[derive(Copy, Clone)]
+struct VisualBuildOptions {
+    segments: bool,
+    transparent_bars: bool,
+    style: VisualStyle,
+    time: f32,
 }
 
 pub fn run(
@@ -190,6 +214,12 @@ pub fn run(
                     KeyCode::KeyS => segments = !segments,
                     KeyCode::KeyB => visual_style = VisualStyle::Bars,
                     KeyCode::KeyF => visual_style = VisualStyle::Fireworks,
+                    KeyCode::KeyR => visual_style = VisualStyle::Radar,
+                    KeyCode::KeyM => visual_style = VisualStyle::Matrix,
+                    KeyCode::KeyO => visual_style = VisualStyle::Oscilloscope,
+                    KeyCode::KeyP => visual_style = VisualStyle::Pulse,
+                    KeyCode::KeyG => visual_style = VisualStyle::Galaxy,
+                    KeyCode::KeyL => visual_style = VisualStyle::Lightning,
                     KeyCode::KeyW => {
                         window_decorated = next_window_decoration_request(window.is_decorated());
                         decoration_refresh_frames = DECORATION_REFRESH_FRAMES;
@@ -233,14 +263,18 @@ pub fn run(
 
                 let w = config.width as f32;
                 let h = config.height as f32;
-                match visual_style {
-                    VisualStyle::Bars => {
-                        build_instances(&mut instances, &spectrum, w, h, segments, transparent_bars)
-                    }
-                    VisualStyle::Fireworks => {
-                        build_firework_instances(&mut instances, &spectrum, w, h, animation_time)
-                    }
-                }
+                build_visual_instances(
+                    &mut instances,
+                    &spectrum,
+                    w,
+                    h,
+                    VisualBuildOptions {
+                        segments,
+                        transparent_bars,
+                        style: visual_style,
+                        time: animation_time,
+                    },
+                );
                 queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances));
 
                 // Header text.
@@ -258,7 +292,7 @@ pub fn run(
                 let frame_label = window_frame_label(window_decorated);
                 let visual_label = visual_style_label(visual_style);
                 let header = format!(
-                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  B/F {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
+                    "NETSPECTRUM {} [{}]  in {}  out {}   1-5 modes  V {}  S seg  A {}  T {}  W {}  Z {}  X {}  Q quit",
                     iface,
                     spectrum.mode.name(),
                     human_rate(spectrum.rate_in),
@@ -436,6 +470,154 @@ fn visual_style_label(style: VisualStyle) -> &'static str {
     match style {
         VisualStyle::Bars => "bars",
         VisualStyle::Fireworks => "fire",
+        VisualStyle::Radar => "radar",
+        VisualStyle::Matrix => "matrix",
+        VisualStyle::Oscilloscope => "scope",
+        VisualStyle::Pulse => "pulse",
+        VisualStyle::Galaxy => "galaxy",
+        VisualStyle::Lightning => "bolt",
+    }
+}
+
+fn build_visual_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    options: VisualBuildOptions,
+) {
+    match options.style {
+        VisualStyle::Bars => build_instances(
+            out,
+            spectrum,
+            w,
+            h,
+            options.segments,
+            options.transparent_bars,
+        ),
+        VisualStyle::Fireworks => build_firework_instances(out, spectrum, w, h, options.time),
+        VisualStyle::Radar => build_radar_instances(out, spectrum, w, h, options.time),
+        VisualStyle::Matrix => build_matrix_instances(out, spectrum, w, h, options.time),
+        VisualStyle::Oscilloscope => {
+            build_oscilloscope_instances(out, spectrum, w, h, options.time)
+        }
+        VisualStyle::Pulse => build_pulse_instances(out, spectrum, w, h, options.time),
+        VisualStyle::Galaxy => build_galaxy_instances(out, spectrum, w, h, options.time),
+        VisualStyle::Lightning => build_lightning_instances(out, spectrum, w, h, options.time),
+    }
+}
+
+fn plot(w: f32, h: f32, band_count: usize) -> Plot {
+    let top = TOP + 6.0;
+    let bottom = h - BOTTOM_LABELS - 4.0;
+    let height = (bottom - top).max(1.0);
+    let slot_w = (w - 2.0 * MARGIN_X) / band_count.max(1) as f32;
+    Plot {
+        w,
+        h,
+        top,
+        bottom,
+        height,
+        slot_w,
+    }
+}
+
+fn ndc_x(px: f32, w: f32) -> f32 {
+    px / w * 2.0 - 1.0
+}
+
+fn ndc_y(py: f32, h: f32) -> f32 {
+    1.0 - py / h * 2.0
+}
+
+fn push_instance(
+    out: &mut Vec<Inst>,
+    plot: Plot,
+    rect: [f32; 4],
+    color: [f32; 4],
+    params: [f32; 4],
+) {
+    if out.len() < MAX_INSTANCES {
+        out.push(Inst {
+            rect: [
+                ndc_x(rect[0], plot.w),
+                ndc_y(rect[1], plot.h),
+                ndc_x(rect[2], plot.w),
+                ndc_y(rect[3], plot.h),
+            ],
+            color,
+            params,
+        });
+    }
+}
+
+fn push_particle(
+    out: &mut Vec<Inst>,
+    plot: Plot,
+    cx: f32,
+    cy: f32,
+    size: f32,
+    color: [f32; 4],
+    intensity: f32,
+) {
+    let r = size * 0.5;
+    push_instance(
+        out,
+        plot,
+        [cx - r, cy + r, cx + r, cy - r],
+        color,
+        [intensity, DRAW_MODE_PARTICLE, 0.0, 0.0],
+    );
+}
+
+fn push_flat_rect(
+    out: &mut Vec<Inst>,
+    plot: Plot,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    color: [f32; 4],
+) {
+    push_instance(
+        out,
+        plot,
+        [x0, y0, x1, y1],
+        color,
+        [0.0, DRAW_MODE_FLAT, 0.0, 0.0],
+    );
+}
+
+fn band_level(spectrum: &Spectrum, band: usize) -> f32 {
+    if spectrum.mirrored {
+        let i = band * 2;
+        spectrum.disp[i].max(spectrum.disp[i + 1]).clamp(0.0, 1.0)
+    } else {
+        spectrum.disp[band].clamp(0.0, 1.0)
+    }
+}
+
+fn band_signed_levels(spectrum: &Spectrum, band: usize) -> (f32, f32) {
+    if spectrum.mirrored {
+        (
+            spectrum.disp[band * 2].clamp(0.0, 1.0),
+            spectrum.disp[band * 2 + 1].clamp(0.0, 1.0),
+        )
+    } else {
+        (spectrum.disp[band].clamp(0.0, 1.0), 0.0)
+    }
+}
+
+fn vivid_tint(band: usize) -> [f32; 3] {
+    match band % 8 {
+        0 => [0.05, 1.0, 0.95],
+        1 => [1.0, 0.92, 0.05],
+        2 => [1.0, 0.08, 0.45],
+        3 => [0.42, 0.18, 1.0],
+        4 => [0.22, 1.0, 0.18],
+        5 => [1.0, 0.36, 0.02],
+        6 => [0.2, 0.62, 1.0],
+        _ => [1.0, 0.18, 0.95],
     }
 }
 
@@ -503,9 +685,12 @@ fn rebuild_labels(
 #[cfg(test)]
 mod tests {
     use super::{
-        background_color, build_firework_instances, build_instances, firework_particle_count,
-        next_window_decoration_request, preferred_alpha_mode, surface_extent, visual_style_label,
-        window_frame_label, VisualStyle, DRAW_MODE_PARTICLE,
+        background_color, build_firework_instances, build_galaxy_instances, build_instances,
+        build_lightning_instances, build_matrix_instances, build_oscilloscope_instances,
+        build_pulse_instances, build_radar_instances, build_visual_instances,
+        firework_particle_count, next_window_decoration_request, preferred_alpha_mode,
+        surface_extent, visual_style_label, window_frame_label, Inst, VisualBuildOptions,
+        VisualStyle, DRAW_MODE_PARTICLE, MAX_INSTANCES,
     };
     use crate::bands::{Mode, Spectrum};
 
@@ -536,6 +721,12 @@ mod tests {
     fn visual_style_label_tracks_selected_renderer() {
         assert_eq!(visual_style_label(VisualStyle::Bars), "bars");
         assert_eq!(visual_style_label(VisualStyle::Fireworks), "fire");
+        assert_eq!(visual_style_label(VisualStyle::Radar), "radar");
+        assert_eq!(visual_style_label(VisualStyle::Matrix), "matrix");
+        assert_eq!(visual_style_label(VisualStyle::Oscilloscope), "scope");
+        assert_eq!(visual_style_label(VisualStyle::Pulse), "pulse");
+        assert_eq!(visual_style_label(VisualStyle::Galaxy), "galaxy");
+        assert_eq!(visual_style_label(VisualStyle::Lightning), "bolt");
     }
 
     #[test]
@@ -598,6 +789,62 @@ mod tests {
 
         assert!(loud.len() > quiet.len());
         assert!(loud.iter().all(|inst| inst.params[1] == DRAW_MODE_PARTICLE));
+    }
+
+    #[test]
+    fn every_visual_style_emits_instances_for_active_spectrum() {
+        let mut spectrum = Spectrum::new(Mode::Protocol, 12);
+        spectrum.disp[0] = 0.75;
+        spectrum.disp[1] = 0.35;
+
+        for style in [
+            VisualStyle::Bars,
+            VisualStyle::Fireworks,
+            VisualStyle::Radar,
+            VisualStyle::Matrix,
+            VisualStyle::Oscilloscope,
+            VisualStyle::Pulse,
+            VisualStyle::Galaxy,
+            VisualStyle::Lightning,
+        ] {
+            let mut instances = Vec::new();
+            build_visual_instances(
+                &mut instances,
+                &spectrum,
+                1280.0,
+                720.0,
+                VisualBuildOptions {
+                    segments: true,
+                    transparent_bars: false,
+                    style,
+                    time: 0.33,
+                },
+            );
+            assert!(!instances.is_empty(), "{style:?} should draw instances");
+            assert!(instances.len() <= MAX_INSTANCES);
+        }
+    }
+
+    #[test]
+    fn supplemental_visual_builders_emit_particles() {
+        let mut spectrum = Spectrum::new(Mode::Hybrid, 12);
+        spectrum.disp[0] = 0.6;
+        spectrum.disp[1] = 0.4;
+
+        for build in [
+            build_radar_instances as fn(&mut Vec<Inst>, &Spectrum, f32, f32, f32),
+            build_matrix_instances,
+            build_oscilloscope_instances,
+            build_pulse_instances,
+            build_galaxy_instances,
+            build_lightning_instances,
+        ] {
+            let mut instances = Vec::new();
+            build(&mut instances, &spectrum, 1280.0, 720.0, 0.45);
+            assert!(instances
+                .iter()
+                .any(|inst| inst.params[1] == DRAW_MODE_PARTICLE));
+        }
     }
 }
 
@@ -903,6 +1150,332 @@ fn build_firework_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h:
                 outbound,
                 [1.0, 0.28, 0.02],
             );
+        }
+    }
+}
+
+fn build_radar_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+    out.clear();
+    let p = plot(w, h, spectrum.band_count());
+    let cx = w * 0.5;
+    let cy = p.top + p.height * 0.52;
+    let radius = (p.height.min(w - 2.0 * MARGIN_X)) * 0.43;
+    let sweep = time * 1.7;
+
+    for ring in 1..=3 {
+        let r = radius * ring as f32 / 3.0;
+        for i in 0..96 {
+            let a = std::f32::consts::TAU * i as f32 / 96.0;
+            push_particle(
+                out,
+                p,
+                cx + a.cos() * r,
+                cy + a.sin() * r,
+                2.2,
+                [0.08, 0.95, 0.72, 0.10],
+                0.2,
+            );
+        }
+    }
+
+    for i in 0..42 {
+        let k = i as f32 / 42.0;
+        let r = radius * k;
+        push_particle(
+            out,
+            p,
+            cx + sweep.cos() * r,
+            cy + sweep.sin() * r,
+            3.0 + k * 3.5,
+            [0.12, 1.0, 0.78, 0.24 * (1.0 - k * 0.35)],
+            0.5,
+        );
+    }
+
+    for band in 0..spectrum.band_count() {
+        let (inbound, outbound) = band_signed_levels(spectrum, band);
+        let level = inbound.max(outbound);
+        if level <= 0.002 {
+            continue;
+        }
+        let base_angle = std::f32::consts::TAU * band as f32 / spectrum.band_count().max(1) as f32
+            - std::f32::consts::FRAC_PI_2;
+        let pulse = (time * (0.8 + level * 2.4) + hash01(band as u32) * 2.0).fract();
+        let blip_r = radius * (0.18 + level * 0.76);
+        let tint = vivid_tint(band);
+        let alpha = 0.35 + level * 0.65;
+        push_particle(
+            out,
+            p,
+            cx + base_angle.cos() * blip_r,
+            cy + base_angle.sin() * blip_r,
+            8.0 + level * 28.0,
+            firework_color(level, band as u32, tint, alpha),
+            level,
+        );
+        push_particle(
+            out,
+            p,
+            cx + base_angle.cos() * blip_r,
+            cy + base_angle.sin() * blip_r,
+            16.0 + pulse * 42.0 * level,
+            firework_color(level, band as u32 ^ 0xbeef, tint, (1.0 - pulse) * 0.28),
+            level,
+        );
+        if spectrum.mirrored && outbound > 0.002 {
+            let out_angle = base_angle + std::f32::consts::PI;
+            push_particle(
+                out,
+                p,
+                cx + out_angle.cos() * blip_r,
+                cy + out_angle.sin() * blip_r,
+                8.0 + outbound * 24.0,
+                firework_color(outbound, band as u32 ^ 0x7711, [1.0, 0.34, 0.08], alpha),
+                outbound,
+            );
+        }
+    }
+}
+
+fn build_matrix_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+    out.clear();
+    let p = plot(w, h, spectrum.band_count());
+    for band in 0..spectrum.band_count() {
+        let level = band_level(spectrum, band);
+        if level <= 0.002 {
+            continue;
+        }
+        let drops = (6.0 + level * 26.0).round() as usize;
+        let x0 = MARGIN_X + band as f32 * p.slot_w;
+        let tint = vivid_tint(band);
+        for i in 0..drops {
+            let seed = (band as u32 + 1).wrapping_mul(131).wrapping_add(i as u32);
+            let speed = 0.16 + level * 0.70 + hash01(seed) * 0.35;
+            let y = p.top + ((time * speed + hash01(seed ^ 0xaaa1)).fract()) * p.height;
+            let x = x0 + (0.12 + hash01(seed ^ 0xbbb2) * 0.76) * p.slot_w;
+            let head = i % 5 == 0;
+            let alpha = if head { 0.85 } else { 0.22 + level * 0.42 };
+            let size = if head {
+                8.0 + level * 8.0
+            } else {
+                4.0 + level * 7.0
+            };
+            push_particle(
+                out,
+                p,
+                x,
+                y,
+                size,
+                firework_color(level, seed, tint, alpha),
+                level,
+            );
+        }
+    }
+}
+
+fn build_oscilloscope_instances(
+    out: &mut Vec<Inst>,
+    spectrum: &Spectrum,
+    w: f32,
+    h: f32,
+    time: f32,
+) {
+    out.clear();
+    let p = plot(w, h, spectrum.band_count());
+    for band in 0..spectrum.band_count() {
+        let (inbound, outbound) = band_signed_levels(spectrum, band);
+        let level = inbound.max(outbound);
+        if level <= 0.002 {
+            continue;
+        }
+        let samples = 28;
+        let x0 = MARGIN_X + band as f32 * p.slot_w + p.slot_w * 0.08;
+        let center = p.top + p.height * (0.50 + (hash01(band as u32) - 0.5) * 0.16);
+        let amp = p.height * (0.025 + level * 0.16);
+        let tint = vivid_tint(band);
+        let direction = if spectrum.mirrored && outbound > inbound {
+            -1.0
+        } else {
+            1.0
+        };
+        for i in 0..samples {
+            let k = i as f32 / (samples - 1) as f32;
+            let phase = time * (3.0 + level * 7.0) + k * std::f32::consts::TAU * 2.2;
+            let wave = phase.sin() * 0.72 + (phase * 2.3 + band as f32).sin() * 0.28;
+            let y = center - wave * amp * direction;
+            let x = x0 + k * p.slot_w * 0.84;
+            push_particle(
+                out,
+                p,
+                x,
+                y,
+                4.0 + level * 8.0,
+                firework_color(level, band as u32 ^ i as u32, tint, 0.34 + level * 0.62),
+                level,
+            );
+        }
+        push_flat_rect(
+            out,
+            p,
+            x0,
+            center - 0.8,
+            x0 + p.slot_w * 0.84,
+            center + 0.8,
+            [tint[0], tint[1], tint[2], 0.08],
+        );
+    }
+}
+
+fn build_pulse_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+    out.clear();
+    let p = plot(w, h, spectrum.band_count());
+    for band in 0..spectrum.band_count() {
+        let level = band_level(spectrum, band);
+        if level <= 0.002 {
+            continue;
+        }
+        let cx = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
+        let cy = p.bottom - (0.20 + level * 0.62) * p.height;
+        let tint = vivid_tint(band);
+        for ring in 0..3 {
+            let phase =
+                (time * (0.45 + level * 1.6) + ring as f32 * 0.32 + band as f32 * 0.07).fract();
+            let radius = p.slot_w * (0.14 + phase * (0.58 + level * 0.42));
+            let points = (18.0 + level * 34.0).round() as usize;
+            let alpha = (1.0 - phase) * (0.14 + level * 0.48);
+            for i in 0..points {
+                let a = std::f32::consts::TAU * i as f32 / points as f32;
+                push_particle(
+                    out,
+                    p,
+                    cx + a.cos() * radius,
+                    cy + a.sin() * radius,
+                    3.8 + level * 8.0,
+                    firework_color(level, band as u32 ^ (i as u32 * 17), tint, alpha),
+                    level,
+                );
+            }
+        }
+    }
+}
+
+fn build_galaxy_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+    out.clear();
+    let p = plot(w, h, spectrum.band_count());
+    for band in 0..spectrum.band_count() {
+        let level = band_level(spectrum, band);
+        if level <= 0.002 {
+            continue;
+        }
+        let cx = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
+        let cy = p.top + p.height * (0.24 + 0.52 * hash01((band as u32 + 5) * 19));
+        let particles = (8.0 + level * 34.0).round() as usize;
+        let tint = vivid_tint(band);
+        for i in 0..particles {
+            let seed = (band as u32 + 1)
+                .wrapping_mul(4099)
+                .wrapping_add(i as u32 * 97);
+            let orbit = p.slot_w * (0.10 + hash01(seed) * (0.34 + level * 0.52));
+            let angle = time * (0.55 + level * 2.2) * if i % 2 == 0 { 1.0 } else { -1.0 }
+                + hash01(seed ^ 0x9090) * std::f32::consts::TAU;
+            let squash = 0.42 + hash01(seed ^ 0x1234) * 0.38;
+            push_particle(
+                out,
+                p,
+                cx + angle.cos() * orbit,
+                cy + angle.sin() * orbit * squash,
+                3.8 + level * 9.0,
+                firework_color(level, seed, tint, 0.28 + level * 0.58),
+                level,
+            );
+        }
+        push_particle(
+            out,
+            p,
+            cx,
+            cy,
+            9.0 + level * 26.0,
+            firework_color(level, band as u32 ^ 0xfeed, tint, 0.28 + level * 0.48),
+            level,
+        );
+    }
+}
+
+fn build_lightning_instances(out: &mut Vec<Inst>, spectrum: &Spectrum, w: f32, h: f32, time: f32) {
+    out.clear();
+    let p = plot(w, h, spectrum.band_count());
+    for band in 0..spectrum.band_count() {
+        let level = band_level(spectrum, band);
+        if level <= 0.002 {
+            continue;
+        }
+        let bolts = (1.0 + level * 3.0).round() as usize;
+        let tint = vivid_tint(band);
+        for bolt in 0..bolts {
+            let seed_base = (band as u32 + 1)
+                .wrapping_mul(6151)
+                .wrapping_add(bolt as u32 * 331);
+            let x_base = MARGIN_X + (band as f32 + 0.5) * p.slot_w;
+            let segments = (8.0 + level * 18.0).round() as usize;
+            let mut prev_x = x_base + (hash01(seed_base) - 0.5) * p.slot_w * 0.45;
+            let mut prev_y = p.top + p.height * 0.10;
+            for i in 1..=segments {
+                let k = i as f32 / segments as f32;
+                let jitter = ((time * 9.0 + i as f32 * 1.7 + band as f32).sin()
+                    + hash01(seed_base ^ i as u32)
+                    - 0.5)
+                    * p.slot_w
+                    * (0.08 + level * 0.22);
+                let x = x_base + jitter;
+                let y = p.top + p.height * (0.10 + k * (0.78 * level + 0.12));
+                let alpha = 0.22 + level * 0.78;
+                push_particle(
+                    out,
+                    p,
+                    x,
+                    y,
+                    5.0 + level * 10.0,
+                    firework_color(level, seed_base ^ i as u32, tint, alpha),
+                    level,
+                );
+                let x_mid = (prev_x + x) * 0.5;
+                let y_mid = (prev_y + y) * 0.5;
+                push_flat_rect(
+                    out,
+                    p,
+                    x_mid - 1.4 - level * 2.2,
+                    y_mid - (y - prev_y).abs() * 0.50,
+                    x_mid + 1.4 + level * 2.2,
+                    y_mid + (y - prev_y).abs() * 0.50,
+                    [tint[0], tint[1], tint[2], 0.10 + level * 0.24],
+                );
+                if i % 4 == 0 {
+                    let branch_dir = if hash01(seed_base ^ (i as u32 * 11)) > 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    for b in 0..4 {
+                        let bk = b as f32 / 4.0;
+                        push_particle(
+                            out,
+                            p,
+                            x + branch_dir * p.slot_w * 0.08 * b as f32,
+                            y - bk * p.height * 0.06,
+                            3.5 + level * 7.0,
+                            firework_color(
+                                level,
+                                seed_base ^ (i as u32 * 23 + b as u32),
+                                tint,
+                                alpha * (1.0 - bk * 0.7),
+                            ),
+                            level,
+                        );
+                    }
+                }
+                prev_x = x;
+                prev_y = y;
+            }
         }
     }
 }
