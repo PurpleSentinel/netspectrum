@@ -1,11 +1,12 @@
 use std::f32::consts::TAU;
-use std::io::Write;
-use std::process::{Child, Command, Stdio};
+use std::io::{Read, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -14,6 +15,11 @@ use crate::bands::Spectrum;
 const SAMPLE_RATE: f32 = 48_000.0;
 const CHANNELS: usize = 2;
 const FRAMES_PER_BLOCK: usize = 256;
+
+#[derive(Clone, Debug, Default)]
+pub struct AudioConfig {
+    pub output: Option<String>,
+}
 
 #[derive(Copy, Clone, Debug, Default)]
 struct AudioTarget {
@@ -68,10 +74,10 @@ pub struct AudioState {
 }
 
 impl AudioState {
-    pub fn new() -> Result<Self> {
-        let mut child = spawn_audio_helper().context("starting audio playback helper")?;
+    pub fn new(config: &AudioConfig) -> Result<Self> {
+        let helper = spawn_audio_helper(config).context("starting audio playback helper")?;
+        let child = helper.child;
 
-        let stdin = child.stdin.take().context("opening audio helper stdin")?;
         let shared = Arc::new(Mutex::new(AudioEngineState::default()));
         let running = Arc::new(AtomicBool::new(true));
         let healthy = Arc::new(AtomicBool::new(true));
@@ -81,7 +87,7 @@ impl AudioState {
             let healthy = healthy.clone();
             std::thread::Builder::new()
                 .name("audio".into())
-                .spawn(move || audio_worker(stdin, shared, running, healthy))
+                .spawn(move || audio_worker(helper.stdin, shared, running, healthy))
                 .context("spawning audio worker")?
         };
 
@@ -122,48 +128,56 @@ impl Drop for AudioState {
     }
 }
 
-pub enum AudioControl {
+pub struct AudioControl {
+    config: AudioConfig,
+    state: AudioMode,
+}
+
+enum AudioMode {
     Off,
     On(AudioState),
     Unavailable,
 }
 
 impl AudioControl {
-    pub fn new() -> Self {
-        Self::Off
+    pub fn new(config: AudioConfig) -> Self {
+        Self {
+            config,
+            state: AudioMode::Off,
+        }
     }
 
     pub fn toggle(&mut self) -> AudioSnapshot {
-        *self = match std::mem::replace(self, Self::Off) {
-            Self::Off | Self::Unavailable => match AudioState::new() {
-                Ok(audio) => Self::On(audio),
+        self.state = match std::mem::replace(&mut self.state, AudioMode::Off) {
+            AudioMode::Off | AudioMode::Unavailable => match AudioState::new(&self.config) {
+                Ok(audio) => AudioMode::On(audio),
                 Err(e) => {
                     eprintln!("audio unavailable: {e}");
-                    Self::Unavailable
+                    AudioMode::Unavailable
                 }
             },
-            Self::On(_) => Self::Off,
+            AudioMode::On(_) => AudioMode::Off,
         };
         self.snapshot()
     }
 
     pub fn update(&mut self, spectrum: &Spectrum) {
-        if let Self::On(audio) = self {
+        if let AudioMode::On(audio) = &mut self.state {
             audio.update(spectrum);
             if !audio.snapshot().available {
-                *self = Self::Unavailable;
+                self.state = AudioMode::Unavailable;
             }
         }
     }
 
     pub fn snapshot(&self) -> AudioSnapshot {
-        match self {
-            Self::Off => AudioSnapshot {
+        match &self.state {
+            AudioMode::Off => AudioSnapshot {
                 enabled: false,
                 available: true,
             },
-            Self::On(audio) => audio.snapshot(),
-            Self::Unavailable => AudioSnapshot {
+            AudioMode::On(audio) => audio.snapshot(),
+            AudioMode::Unavailable => AudioSnapshot {
                 enabled: false,
                 available: false,
             },
@@ -199,59 +213,184 @@ fn audio_worker(
     }
 }
 
-fn spawn_audio_helper() -> Result<Child> {
-    let attempts = [
-        (
-            "pw-cat",
-            &[
-                "--raw",
-                "--playback",
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-                "--format",
-                "f32",
-                "--latency",
-                "20ms",
-                "-",
-            ][..],
-        ),
-        (
-            "pacat",
-            &[
-                "--raw",
-                "--playback",
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-                "--format",
-                "float32le",
-                "--client-name",
-                "netspectrum",
-                "--stream-name",
-                "netspectrum audio",
-            ][..],
-        ),
-    ];
+struct AudioHelper {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioAttempt {
+    program: &'static str,
+    args: Vec<String>,
+}
+
+fn spawn_audio_helper(config: &AudioConfig) -> Result<AudioHelper> {
+    let attempts = audio_attempts(config.output.as_deref());
+    let session = sudo_audio_session();
 
     let mut errors = Vec::new();
-    for (program, args) in attempts {
-        match Command::new(program)
-            .args(args)
+    for attempt in attempts {
+        let mut command = Command::new(attempt.program);
+        command
+            .args(&attempt.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
-            Ok(child) => return Ok(child),
-            Err(e) => errors.push(format!("{program}: {e}")),
+            .stderr(Stdio::piped());
+        apply_audio_session(&mut command, session.as_ref());
+
+        match command.spawn() {
+            Ok(mut child) => match validate_audio_helper(attempt.program, &mut child) {
+                Ok(stdin) => return Ok(AudioHelper { child, stdin }),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let stderr = collect_child_stderr(&mut child);
+                    errors.push(format!(
+                        "{}: {}{}",
+                        attempt.program,
+                        e,
+                        if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({stderr})")
+                        }
+                    ));
+                }
+            },
+            Err(e) => errors.push(format!("{}: {e}", attempt.program)),
         }
     }
 
     anyhow::bail!("no supported audio helper found ({})", errors.join("; "))
 }
+
+fn audio_attempts(output: Option<&str>) -> Vec<AudioAttempt> {
+    let mut pw_args = vec![
+        "--raw",
+        "--playback",
+        "--rate",
+        "48000",
+        "--channels",
+        "2",
+        "--format",
+        "f32",
+        "--latency",
+        "20ms",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    if let Some(output) = output {
+        pw_args.extend(["--target".to_string(), output.to_string()]);
+    }
+    pw_args.push("-".to_string());
+
+    let mut pa_args = vec![
+        "--raw",
+        "--playback",
+        "--rate",
+        "48000",
+        "--channels",
+        "2",
+        "--format",
+        "float32le",
+        "--client-name",
+        "netspectrum",
+        "--stream-name",
+        "netspectrum audio",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    if let Some(output) = output {
+        pa_args.extend(["--device".to_string(), output.to_string()]);
+    }
+
+    vec![
+        AudioAttempt {
+            program: "pw-cat",
+            args: pw_args,
+        },
+        AudioAttempt {
+            program: "pacat",
+            args: pa_args,
+        },
+    ]
+}
+
+fn validate_audio_helper(program: &str, child: &mut Child) -> Result<ChildStdin> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .with_context(|| format!("{program} did not expose stdin"))?;
+    let silence = vec![0u8; FRAMES_PER_BLOCK * CHANNELS * std::mem::size_of::<f32>()];
+    stdin
+        .write_all(&silence)
+        .with_context(|| format!("{program} rejected initial audio block"))?;
+    std::thread::sleep(Duration::from_millis(40));
+    if let Some(status) = child
+        .try_wait()
+        .with_context(|| format!("checking {program} status"))?
+    {
+        anyhow::bail!("{program} exited during startup with {status}");
+    }
+    Ok(stdin)
+}
+
+fn collect_child_stderr(child: &mut Child) -> String {
+    let Some(mut stderr) = child.stderr.take() else {
+        return String::new();
+    };
+    let mut text = String::new();
+    let _ = stderr.read_to_string(&mut text);
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioSession {
+    uid: u32,
+    gid: u32,
+    runtime_dir: String,
+}
+
+fn sudo_audio_session() -> Option<AudioSession> {
+    let uid = std::env::var("SUDO_UID").ok()?.parse().ok()?;
+    let gid = std::env::var("SUDO_GID").ok()?.parse().ok()?;
+    if uid == 0 {
+        return None;
+    }
+    Some(AudioSession {
+        uid,
+        gid,
+        runtime_dir: format!("/run/user/{uid}"),
+    })
+}
+
+fn apply_audio_session(command: &mut Command, session: Option<&AudioSession>) {
+    if let Some(session) = session {
+        command
+            .env("XDG_RUNTIME_DIR", &session.runtime_dir)
+            .env(
+                "PULSE_SERVER",
+                format!("unix:{}/pulse/native", session.runtime_dir),
+            )
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}/bus", session.runtime_dir),
+            );
+        apply_audio_user(command, session.uid, session.gid);
+    }
+}
+
+#[cfg(unix)]
+fn apply_audio_user(command: &mut Command, uid: u32, gid: u32) {
+    use std::os::unix::process::CommandExt;
+
+    command.gid(gid).uid(uid);
+}
+
+#[cfg(not(unix))]
+fn apply_audio_user(_command: &mut Command, _uid: u32, _gid: u32) {}
 
 fn fill_audio_block(block: &mut [u8], state: &mut AudioEngineState) {
     for frame in block.chunks_exact_mut(CHANNELS * std::mem::size_of::<f32>()) {
@@ -343,7 +482,8 @@ mod tests {
     use crate::bands::{Mode, Spectrum};
 
     use super::{
-        fill_audio_block, target_from_spectrum, write_f32_pair, AudioEngineState, CHANNELS,
+        audio_attempts, fill_audio_block, target_from_spectrum, write_f32_pair, AudioEngineState,
+        CHANNELS,
     };
 
     #[test]
@@ -404,5 +544,21 @@ mod tests {
 
         assert_eq!(f32::from_ne_bytes(frame[..4].try_into().unwrap()), 0.5);
         assert_eq!(f32::from_ne_bytes(frame[4..].try_into().unwrap()), -0.25);
+    }
+
+    #[test]
+    fn helper_attempts_include_output_targets() {
+        let attempts = audio_attempts(Some("alsa_output.pci-0000_02_00.1.hdmi-stereo"));
+
+        assert_eq!(attempts[0].program, "pw-cat");
+        assert!(attempts[0]
+            .args
+            .windows(2)
+            .any(|w| w == ["--target", "alsa_output.pci-0000_02_00.1.hdmi-stereo"]));
+        assert_eq!(attempts[1].program, "pacat");
+        assert!(attempts[1]
+            .args
+            .windows(2)
+            .any(|w| w == ["--device", "alsa_output.pci-0000_02_00.1.hdmi-stereo"]));
     }
 }

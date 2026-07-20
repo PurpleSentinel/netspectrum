@@ -71,6 +71,8 @@ Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
 ```
 -f, --filter <BPF>   e.g. -f 'not port 22' to hide the SSH session you're watching from
     --hosts <N>      band count in hosts mode (4-24, default 12)
+    --audio-output <TARGET>
+                     optional PipeWire/Pulse sink target, e.g. an HDMI sink name
 -m, --mode <MODE>    initial view (protocol|ports|hosts|hybrid|sizes)
     --list           list capture interfaces and exit
 ```
@@ -83,4 +85,7 @@ Other keys: `S` toggles LED segmentation, `A` toggles audio feedback,
 * Direction detection uses the interface's own addresses; traffic not involving
   a local address counts as inbound.
 * If `A` shows `audio n/a`, check that PipeWire/PulseAudio is running and that
-  `pw-cat` or `pacat` is installed.
+  `pw-cat` or `pacat` is installed. If you run netspectrum with `sudo`, audio is
+  started against the original user session when `SUDO_UID`/`SUDO_GID` are
+  available. To force HDMI or another sink, pass `--audio-output <TARGET>` using
+  a sink name from `wpctl status` or `pactl list short sinks`.

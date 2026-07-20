@@ -18,7 +18,7 @@ use winit::{
     window::WindowBuilder,
 };
 
-use crate::audio::AudioControl;
+use crate::audio::{AudioConfig, AudioControl};
 use crate::bands::{human_rate, Mode, Spectrum};
 use crate::capture::PacketMeta;
 
@@ -37,7 +37,12 @@ const MARGIN_X: f32 = 26.0;
 const TOP: f32 = 56.0;
 const BOTTOM_LABELS: f32 = 46.0;
 
-pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> Result<()> {
+pub fn run(
+    mut spectrum: Spectrum,
+    rx: Receiver<PacketMeta>,
+    iface: String,
+    audio_config: AudioConfig,
+) -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let window = Arc::new(
@@ -132,7 +137,7 @@ pub fn run(mut spectrum: Spectrum, rx: Receiver<PacketMeta>, iface: String) -> R
 
     // ------------------------------------------------------------- state
     let mut segments = true;
-    let mut audio = AudioControl::new();
+    let mut audio = AudioControl::new(audio_config);
     let mut last = Instant::now();
     let mut label_refresh = 0.0f32;
     let mut instances: Vec<Inst> = Vec::with_capacity(MAX_INSTANCES);
