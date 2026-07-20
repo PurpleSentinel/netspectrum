@@ -16,11 +16,13 @@ const SAMPLE_RATE: f32 = 48_000.0;
 const CHANNELS: usize = 2;
 const FRAMES_PER_BLOCK: usize = 256;
 
+/// Runtime audio configuration from CLI flags.
 #[derive(Clone, Debug, Default)]
 pub struct AudioConfig {
     pub output: Option<String>,
 }
 
+/// User-selectable synthesis style for the optional audio feedback.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum TonePalette {
     #[default]
@@ -31,6 +33,7 @@ pub enum TonePalette {
 }
 
 impl TonePalette {
+    /// Short label displayed in the HUD.
     pub fn name(self) -> &'static str {
         match self {
             Self::Sweep => "sweep",
@@ -40,6 +43,7 @@ impl TonePalette {
         }
     }
 
+    /// Advance to the next tone palette while preserving wrap-around behavior.
     fn next(self) -> Self {
         match self {
             Self::Sweep => Self::Chime,
@@ -50,6 +54,7 @@ impl TonePalette {
     }
 }
 
+/// Desired audio levels derived from the latest Spectrum frame.
 #[derive(Copy, Clone, Debug, Default)]
 struct AudioTarget {
     enabled: bool,
@@ -60,6 +65,7 @@ struct AudioTarget {
     palette: TonePalette,
 }
 
+/// Smoothed oscillator state owned by the audio worker thread.
 #[derive(Copy, Clone, Debug)]
 struct AudioEngineState {
     target: AudioTarget,
@@ -89,6 +95,7 @@ impl Default for AudioEngineState {
     }
 }
 
+/// Snapshot used by the render loop for HUD status without exposing internals.
 #[derive(Clone, Debug)]
 pub struct AudioSnapshot {
     pub enabled: bool,
@@ -96,6 +103,7 @@ pub struct AudioSnapshot {
     pub palette: TonePalette,
 }
 
+/// Owns the helper process and worker thread for active audio playback.
 pub struct AudioState {
     shared: Arc<Mutex<AudioEngineState>>,
     running: Arc<AtomicBool>,
@@ -105,6 +113,7 @@ pub struct AudioState {
 }
 
 impl AudioState {
+    /// Start pw-cat/pacat and spawn the thread that writes raw stereo f32 blocks.
     pub fn new(config: &AudioConfig, palette: TonePalette) -> Result<Self> {
         let helper = spawn_audio_helper(config).context("starting audio playback helper")?;
         let child = helper.child;
@@ -133,6 +142,7 @@ impl AudioState {
         })
     }
 
+    /// Convert the current visual spectrum into the target levels for synthesis.
     pub fn update(&mut self, spectrum: &Spectrum) {
         let palette = self
             .shared
@@ -142,6 +152,7 @@ impl AudioState {
         self.set_target(target_from_spectrum(spectrum, true, palette));
     }
 
+    /// Report whether audio is enabled and the helper is still accepting data.
     pub fn snapshot(&self) -> AudioSnapshot {
         let palette = self
             .shared
@@ -155,6 +166,7 @@ impl AudioState {
         }
     }
 
+    /// Change tone palette without restarting the helper process.
     pub fn set_palette(&self, palette: TonePalette) {
         if let Ok(mut state) = self.shared.lock() {
             state.target.palette = palette;
@@ -184,6 +196,7 @@ pub struct AudioControl {
     palette: TonePalette,
 }
 
+/// High-level audio state machine controlled by the `A` key.
 enum AudioMode {
     Off,
     On(AudioState),
@@ -191,6 +204,7 @@ enum AudioMode {
 }
 
 impl AudioControl {
+    /// Create audio control in the default muted-but-available state.
     pub fn new(config: AudioConfig) -> Self {
         Self {
             config,
@@ -199,6 +213,8 @@ impl AudioControl {
         }
     }
 
+    /// Toggle audio on/off. Startup failures are remembered as Unavailable so
+    /// the HUD can show `audio n/a`.
     pub fn toggle(&mut self) -> AudioSnapshot {
         self.state = match std::mem::replace(&mut self.state, AudioMode::Off) {
             AudioMode::Off | AudioMode::Unavailable => {
@@ -215,6 +231,7 @@ impl AudioControl {
         self.snapshot()
     }
 
+    /// Cycle tone palette whether audio is currently running or not.
     pub fn cycle_palette(&mut self) -> TonePalette {
         self.palette = self.palette.next();
         if let AudioMode::On(audio) = &self.state {
@@ -223,6 +240,7 @@ impl AudioControl {
         self.palette
     }
 
+    /// Push fresh spectrum-derived levels to the audio thread.
     pub fn update(&mut self, spectrum: &Spectrum) {
         if let AudioMode::On(audio) = &mut self.state {
             audio.update(spectrum);
@@ -232,6 +250,7 @@ impl AudioControl {
         }
     }
 
+    /// Produce the HUD-facing status for the current audio mode.
     pub fn snapshot(&self) -> AudioSnapshot {
         match &self.state {
             AudioMode::Off => AudioSnapshot {
@@ -257,6 +276,8 @@ fn audio_worker(
 ) {
     let mut block = vec![0u8; FRAMES_PER_BLOCK * CHANNELS * std::mem::size_of::<f32>()];
 
+    // The worker owns real-time-ish generation. The UI only updates a small
+    // target struct under a mutex, keeping rendering independent from audio I/O.
     while running.load(Ordering::Relaxed) {
         let Ok(mut state) = shared.lock() else {
             fill_silence(&mut block);
@@ -282,12 +303,14 @@ struct AudioHelper {
     stdin: ChildStdin,
 }
 
+/// One concrete external command candidate for raw audio playback.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AudioAttempt {
     program: &'static str,
     args: Vec<String>,
 }
 
+/// Start the first available playback helper and return its stdin.
 fn spawn_audio_helper(config: &AudioConfig) -> Result<AudioHelper> {
     let attempts = audio_attempts(config.output.as_deref());
     let session = sudo_audio_session();
@@ -328,6 +351,7 @@ fn spawn_audio_helper(config: &AudioConfig) -> Result<AudioHelper> {
     anyhow::bail!("no supported audio helper found ({})", errors.join("; "))
 }
 
+/// Build PipeWire and PulseAudio command lines, including optional sink target.
 fn audio_attempts(output: Option<&str>) -> Vec<AudioAttempt> {
     let mut pw_args = vec![
         "--raw",
@@ -382,6 +406,7 @@ fn audio_attempts(output: Option<&str>) -> Vec<AudioAttempt> {
     ]
 }
 
+/// Write one silent block and make sure the helper survives startup.
 fn validate_audio_helper(program: &str, child: &mut Child) -> Result<ChildStdin> {
     let mut stdin = child
         .stdin
@@ -401,6 +426,7 @@ fn validate_audio_helper(program: &str, child: &mut Child) -> Result<ChildStdin>
     Ok(stdin)
 }
 
+/// Drain child stderr for a concise error message when startup fails.
 fn collect_child_stderr(child: &mut Child) -> String {
     let Some(mut stderr) = child.stderr.take() else {
         return String::new();
@@ -417,6 +443,7 @@ struct AudioSession {
     runtime_dir: String,
 }
 
+/// When netspectrum runs under sudo, locate the original user's audio session.
 fn sudo_audio_session() -> Option<AudioSession> {
     let uid = std::env::var("SUDO_UID").ok()?.parse().ok()?;
     let gid = std::env::var("SUDO_GID").ok()?.parse().ok()?;
@@ -430,6 +457,7 @@ fn sudo_audio_session() -> Option<AudioSession> {
     })
 }
 
+/// Apply environment and uid/gid overrides so helpers connect to desktop audio.
 fn apply_audio_session(command: &mut Command, session: Option<&AudioSession>) {
     if let Some(session) = session {
         command
@@ -447,6 +475,7 @@ fn apply_audio_session(command: &mut Command, session: Option<&AudioSession>) {
 }
 
 #[cfg(unix)]
+/// Drop the helper process back to the desktop user's uid/gid on Unix hosts.
 fn apply_audio_user(command: &mut Command, uid: u32, gid: u32) {
     use std::os::unix::process::CommandExt;
 
@@ -454,11 +483,15 @@ fn apply_audio_user(command: &mut Command, uid: u32, gid: u32) {
 }
 
 #[cfg(not(unix))]
+/// Non-Unix builds keep the current process identity.
 fn apply_audio_user(_command: &mut Command, _uid: u32, _gid: u32) {}
 
+/// Fill one raw interleaved stereo f32 block from smoothed target levels.
 fn fill_audio_block(block: &mut [u8], state: &mut AudioEngineState) {
     for frame in block.chunks_exact_mut(CHANNELS * std::mem::size_of::<f32>()) {
         let target = state.target;
+        // Smooth gate and levels per sample to avoid clicks when toggling or
+        // when traffic spikes.
         let gate = if target.enabled { 1.0 } else { 0.0 };
         state.amp += (gate - state.amp) * 0.004;
         state.mono_level += (target.mono_level - state.mono_level) * 0.0025;
@@ -474,6 +507,8 @@ fn fill_audio_block(block: &mut [u8], state: &mut AudioEngineState) {
     }
 }
 
+/// Derive synthesis levels from visual bands. Hybrid mode keeps inbound and
+/// outbound separate so the audio mirrors the directional display.
 fn target_from_spectrum(spectrum: &Spectrum, enabled: bool, palette: TonePalette) -> AudioTarget {
     if spectrum.mirrored {
         let mut inbound = 0.0f32;
@@ -513,6 +548,7 @@ fn target_from_spectrum(spectrum: &Spectrum, enabled: bool, palette: TonePalette
     }
 }
 
+/// Generate one mono/inbound/outbound sample tuple for the selected palette.
 fn palette_sample(state: &mut AudioEngineState, palette: TonePalette) -> (f32, f32, f32) {
     match palette {
         TonePalette::Sweep => {
@@ -597,16 +633,19 @@ fn palette_sample(state: &mut AudioEngineState, palette: TonePalette) -> (f32, f
     }
 }
 
+/// Advance a sine oscillator and soft-clip it with tanh for a warmer tone.
 fn shaped_tone(phase: &mut f32, hz: f32, drive: f32) -> f32 {
     *phase = (*phase + hz / SAMPLE_RATE).fract();
     ((*phase * TAU).sin() * drive).tanh()
 }
 
+/// Write one native-endian stereo frame expected by pw-cat/pacat raw f32 modes.
 fn write_f32_pair(frame: &mut [u8], left: f32, right: f32) {
     frame[..4].copy_from_slice(&left.to_ne_bytes());
     frame[4..8].copy_from_slice(&right.to_ne_bytes());
 }
 
+/// Emit silence when state locking fails or during helper validation.
 fn fill_silence(block: &mut [u8]) {
     block.fill(0);
 }

@@ -32,6 +32,10 @@ pub struct PacketMeta {
 
 const UNSPEC: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
 
+/// Parse one packet into the minimal metadata the visualiser needs.
+///
+/// The capture snaplen is small, so this deliberately stays at Ethernet/IP/L4
+/// headers and never depends on payload bytes.
 fn parse(data: &[u8], wire_len: u32, local: &HashSet<IpAddr>) -> Option<PacketMeta> {
     let sliced = SlicedPacket::from_ethernet(data).ok()?;
 
@@ -75,11 +79,15 @@ fn parse(data: &[u8], wire_len: u32, local: &HashSet<IpAddr>) -> Option<PacketMe
     })
 }
 
+/// Start the passive pcap loop and return the receiving end of the packet
+/// metadata channel used by the render thread.
 pub fn spawn(
     iface: String,
     filter: Option<String>,
     local: HashSet<IpAddr>,
 ) -> Receiver<PacketMeta> {
+    // Bound the queue so a stalled UI cannot grow memory without limit. Capture
+    // uses try_send below and drops frames instead of blocking.
     let (tx, rx): (Sender<PacketMeta>, Receiver<PacketMeta>) = bounded(1 << 16);
 
     std::thread::Builder::new()
@@ -92,6 +100,8 @@ pub fn spawn(
                     .open()
             });
 
+            // Capture setup errors are fatal: without a pcap handle the UI would
+            // just render an idle display forever.
             let mut cap = match cap {
                 Ok(c) => c,
                 Err(e) => {
@@ -103,6 +113,8 @@ pub fn spawn(
             };
 
             if let Some(f) = filter {
+                // Let libpcap compile the user-provided BPF program so invalid
+                // syntax fails early and loudly.
                 if let Err(e) = cap.filter(&f, true) {
                     eprintln!("error: bad BPF filter '{f}': {e}");
                     exit(1);

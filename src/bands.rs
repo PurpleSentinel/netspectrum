@@ -17,6 +17,7 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Uppercase label shown in the HUD for the current traffic grouping.
     pub fn name(self) -> &'static str {
         match self {
             Mode::Protocol => "PROTOCOLS",
@@ -26,6 +27,8 @@ impl Mode {
             Mode::Sizes => "PACKET SIZES",
         }
     }
+
+    /// Parse the CLI-friendly mode aliases accepted by `-m/--mode`.
     pub fn from_str(s: &str) -> Option<Mode> {
         match s.to_ascii_lowercase().as_str() {
             "protocol" | "protocols" | "proto" => Some(Mode::Protocol),
@@ -79,6 +82,7 @@ const OTHER_TCP: usize = 15;
 const OTHER_UDP: usize = 16;
 const OTHER: usize = 17;
 
+/// Map common L4 service ports and ARP/ICMP into the fixed protocol bands.
 fn proto_band(m: &PacketMeta) -> usize {
     if m.ethertype == 0x0806 {
         return ARP;
@@ -135,6 +139,7 @@ const GROUP_LABELS: [&str; 8] = [
     "OTHER",
 ];
 
+/// Collapse the detailed protocol map into the smaller directional hybrid set.
 fn group_band(m: &PacketMeta) -> usize {
     match proto_band(m) {
         HTTP | TLS | QUIC => 0,
@@ -153,6 +158,7 @@ const PORT_LABELS: [&str; 16] = [
     "1k-2k", "2k-4k", "4k-8k", "8k-16k", "16k-32k", "32k+",
 ];
 
+/// Bucket traffic by the lower endpoint port using log2-style ranges.
 fn port_band(m: &PacketMeta) -> usize {
     let sp = if m.sport == 0 {
         m.dport
@@ -180,6 +186,7 @@ const SIZE_LABELS: [&str; 8] = [
     "jumbo",
 ];
 
+/// Convert captured wire length into packet-size histogram bands.
 fn size_band(m: &PacketMeta) -> usize {
     for (i, e) in SIZE_EDGES.iter().enumerate() {
         if m.len <= *e {
@@ -224,6 +231,7 @@ pub struct Spectrum {
 }
 
 impl Spectrum {
+    /// Create a signal processor with the requested initial mode.
     pub fn new(mode: Mode, n_hosts: usize) -> Self {
         let mut s = Spectrum {
             mode,
@@ -250,6 +258,8 @@ impl Spectrum {
         s
     }
 
+    /// Switch band layout and reset display state so old-mode energy does not
+    /// leak into the new view.
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
         self.mirrored = mode == Mode::Hybrid;
@@ -286,6 +296,7 @@ impl Spectrum {
         self.labels.len()
     }
 
+    /// Add one packet's wire length into the accumulator for the active mode.
     pub fn ingest(&mut self, m: &PacketMeta) {
         let bytes = m.len as f64;
         if m.inbound {
@@ -304,6 +315,7 @@ impl Spectrum {
                 self.acc[idx] += bytes;
             }
             Mode::Hosts => {
+                // Hosts mode ranks the remote endpoint, not the local address.
                 let remote = if m.inbound { m.src } else { m.dst };
                 *self.host_bytes.entry(remote).or_insert(0.0) += bytes;
                 if let Some(slot) = self.host_slots.iter().position(|s| *s == Some(remote)) {
@@ -313,6 +325,8 @@ impl Spectrum {
         }
     }
 
+    /// Advance the signal chain: convert accumulated bytes into smoothed,
+    /// log-scaled display values and peak caps.
     pub fn tick(&mut self, dt: f32) {
         let dt = dt.clamp(0.0005, 0.25);
         self.clock += dt;
@@ -342,6 +356,7 @@ impl Spectrum {
         for (i, rate) in rates.iter().enumerate() {
             self.rate_ema[i] += (*rate - self.rate_ema[i]) * k_rate as f64;
 
+            // Log scaling keeps quiet and busy links both visually active.
             let norm = (((1.0 + *rate).ln() / log_full) as f32).clamp(0.0, 1.0);
             let k = if norm > self.disp[i] {
                 k_attack
@@ -364,6 +379,7 @@ impl Spectrum {
         }
     }
 
+    /// Periodically refresh host slots while preserving stable bar positions.
     fn host_tick(&mut self, dt: f32) {
         // Decay ranking scores so stale hosts fade out (~30 s half-life-ish).
         let decay = (-dt as f64 / 30.0).exp();
@@ -436,6 +452,7 @@ impl Spectrum {
     }
 }
 
+/// Shorten long IPv6 addresses so band labels remain readable.
 fn shorten_ip(ip: &IpAddr) -> String {
     let s = ip.to_string();
     if s.len() > 16 {
@@ -445,6 +462,7 @@ fn shorten_ip(ip: &IpAddr) -> String {
     }
 }
 
+/// Format bytes/sec for the HUD and per-band labels.
 pub fn human_rate(bps: f64) -> String {
     if bps >= 1e9 {
         format!("{:.2} GB/s", bps / 1e9)

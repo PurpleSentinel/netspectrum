@@ -12,6 +12,8 @@ use clap::Parser;
 use audio::AudioConfig;
 use bands::{Mode, Spectrum};
 
+// CLI surface for the application. Keep these options small and direct: the
+// runtime state is controlled live from the render loop once the window opens.
 /// A GPU-accelerated graphic equaliser for passively observed network traffic.
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -42,11 +44,15 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    // Parse CLI flags before touching pcap so --help/--version remain cheap and
+    // do not require capture privileges.
     let args = Args::parse();
 
     let devices = pcap::Device::list().context("listing capture devices")?;
 
     if args.list {
+        // Listing is intentionally read-only and exits before creating the UI or
+        // opening a packet capture handle.
         for d in &devices {
             let addrs: Vec<String> = d.addresses.iter().map(|a| a.addr.to_string()).collect();
             println!("{:16} {}", d.name, addrs.join(", "));
@@ -61,6 +67,9 @@ fn main() -> Result<()> {
         )
     })?;
 
+    // Use the named interface when provided, otherwise let libpcap choose the
+    // system default. The selected pcap::Device also carries local addresses
+    // used later for inbound/outbound direction detection.
     let device = match &args.interface {
         Some(name) => devices
             .iter()
@@ -88,6 +97,8 @@ fn main() -> Result<()> {
 
     println!("netspectrum: passive capture on '{iface}' -- no packets are ever transmitted");
 
+    // Capture runs on its own thread and streams compact metadata to the render
+    // loop. The renderer owns the Spectrum so all UI state stays on one thread.
     let rx = capture::spawn(iface.clone(), args.filter.clone(), local);
     let spectrum = Spectrum::new(mode, args.hosts);
     render::run(
